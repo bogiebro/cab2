@@ -1,22 +1,22 @@
 module TaxiSearch
 using Reexport
-import LightGraphs; LG = LightGraphs
-import Laplacians; Lap = Laplacians
-using Reel
-I = Iterators
+import LightGraphs; const LG = LightGraphs
+import Laplacians; const Lap = Laplacians
+import FunctionWrappers; const Fn = FunctionWrappers.FunctionWrapper
+using Reel, GraphPlot
+const Itr = Iterators
+const T = Tuple
 
-@reexport using Plots, GraphPlot, Distributions,
-  LinearAlgebra, SparseArrays, Random
+@reexport using Plots, Distributions, LinearAlgebra, SparseArrays, Random
 
-export LG, Lap, getGraph, routeDiff, todist, hotVals,
-  randPol, greedyPol, greedyPolProp, greedyF, justCycles,
-  iterated, fixedPoint, scorePolicy, ptrPolicy, neighborMin,
-  mkDistMat, mkP, PolSpec, uni, solo, ratios, SimStat,
-  TaxiEmptyFrac, NodeSOLFrac, MaxCars, NodeWaitTimes,
-  Vis, replay, competB, withRho, indivB, indivE,
-  benchH, benchS, benchL, nonNan, agg, id, prToLam, c
+export LG, Lap,
+       randPol, greedyPol, greedyPolProp, hotPtrs, greedyF, greedyBF,
+       iterated, fixedPoint, neighborMin, scorePolicy, ptrPolicy, randStep,
+       routeDiff, nonNan, toDist, RoadNet, randM, justCycles,
+       getGraph, mkP, toContinuous, plotG, changeLen, c, fst
 
-Graph = SparseMatrixCSC{Float64,Int}
+const Graph = SparseMatrixCSC{Float64,Int}
+const Policy = Union{Graph, Matrix{Float64}}
 
 "Read a csv where each row is an edge"
 function getGraph(fname)
@@ -27,46 +27,79 @@ function getGraph(fname)
   g .+ g'
 end
 
+"Road graph with associated properties"
+struct RoadNet
+  g::Graph
+  lg::LG.AbstractGraph{Int}
+  lam::Vector{Float64}
+  xs::Vector{Float64}
+  ys::Vector{Float64}
+  dists::Matrix{Float64}
+  M::Policy
+  parents::Matrix{Int}
+  len::Union{Vector{Float64},Nothing}
+end
+
+function randM(n)
+  M = rand(n,n)
+  M -= spdiagm(0=>diag(M));
+  M ./= sum(M;dims= 2);
+  M
+end
+
+function RoadNet(n::Int)
+  lg = LG.Grid([n,n])
+  M = randM(LG.nv(lg))
+  RoadNet(lg, M, nothing, Lap.grid2coords(n)...)
+end
+
+function RoadNet(lg::LG.AbstractGraph{Int}, M, len, xs, ys)
+  g = copy(LG.adjacency_matrix(lg, Float64)')
+  dmat = len == nothing ? LG.weights(lg) : mkDistMat(g, len)
+  fwState = LG.floyd_warshall_shortest_paths(lg, dmat)
+  RoadNet(g, lg, rand(Exponential(0.1), size(g)[1]),
+    xs, ys, Float64.(fwState.dists), M, fwState.parents, len)
+end
+
+function changeLen(net::RoadNet, l::Vector{Float64})
+  dmat = mkDistMat(net.g, l)
+  fwState = LG.floyd_warshall_shortest_paths(net.lg, dmat)
+  RoadNet(net.g, net.lg, net.lam, net.xs, net.ys,
+    Float64.(fwState.dists), net.M, fwState.parents, l)
+end
+
 "What fraction if the routes are the same?"
 routeDiff(a, b) = norm(a - b, 0) / length(a)
 
 "Normalize a probability distribution"
-todist(x) = x ./ sum(x)
+toDist(x) = x ./ sum(x)
 
 "Filter only non nan values"
 nonNan(x) = x[.!isnan.(x)]
 
 "Policy that takes the shortest path to the highest prob node"
-function hotVals(g::LG.SimpleDiGraph{Int}, lam::Vector{Float64})
-  m = argmax(lam)
-  pol = LG.bellman_ford_shortest_paths(reverse(g), m).parents
-  ns = LG.neighbors(g, m)
-  n = ns[argmax(lam[ns])]
+function hotPtrs(net::RoadNet)
+  m = argmax(net.lam)
+  ns = LG.neighbors(net.lg, m)
+  n = ns[argmax(net.lam[ns])]
+  pol = net.parents[m,:] # only for undirected
   pol[m] = n
   pol
 end
 
-# Undirected version takes floyd warshall state
-function hotVals(g::LG.SimpleGraph{Int}, st, lam)
-  m = argmax(lam)
-  ns = LG.neighbors(g, m)
-  n = ns[argmax(lam[ns])]
-  pol = st[m,:]
-  pol[m] = n
-  pol
-end
+randPol(net) = scorePolicy(ones(length(net.lam)), net.g)
+greedyPol(net) = greedyPol(net, net.lam)
+greedyPol(net, score) = ptrPolicy(neighborMin(net.g, 1.0 ./ score)[2])
+greedyPolProp(net) = scorePolicy(net.lam, net.g)
 
-randPol(A, lam) = scorePolicy(ones(length(lam)), A)
-greedyPol(A, lam) = ptrPolicy(neighborMin(A, 1 ./ lam)[2])
-greedyPolProp(A, lam) = scorePolicy(lam, A)
-
-greedyF(A, lam) = x-> scorePolicy(lam ./ (x .+ 1), A)
-
-#ptrPolicy(neighborMin(A, collect(
-  #zip(p, Float64.(x))))[2])
+# We actually need to know what others are doing
+greedyF(net) = x::Vector{Int}-> scorePolicy(net.lam ./ (x .+ 1), net.g)
+greedyBF(net) = x::Vector{Int}-> ptrPolicy(neighborMin(net.g,
+  collect(zip(net.lam, 1.0 / Float64.(x .+ 1))))[2])
 
 "Keeps only the cycles of a graph"
-function justCycles(g)
+justCycles(g::Graph) = justCycles(LG.DiGraph(g'))
+function justCycles(g::LG.AbstractGraph)
   cg = LG.DiGraph{Int}()
   LG.add_vertices!(cg, LG.nv(g))
   for c in LG.simplecycles(g)
@@ -106,7 +139,7 @@ end
 
 function scorePolicy(scores::Vector{X}, A::Graph)::Graph where {X}
   r = spdiagm(0=>scores) * A
-  r * spdiagm(0=> 1 ./ reshape(sum(r;dims=1), :))
+  r * spdiagm(0=> 1.0 ./ reshape(sum(r;dims=1), :))
 end
 
 function ptrPolicy(ptrs::Vector{Int})::Graph
@@ -131,9 +164,9 @@ function neighborMin(A::Graph,v::Vector{Float64})::
   (c, w)
 end
 
-function neighborMin(A,v)
+function neighborMin(A::Graph,v::Vector{NTuple{N,Float64}}) where {N}
   w = zeros(Int,A.m)
-  c = fill(Tuple(fill(Inf64, length(v[1]))), A.m)
+  c = fill(NTuple{N,Float64}(I.cycle(Inf64)), A.m)
   for vi in 1:A.m
       for ind in A.colptr[vi]:(A.colptr[vi+1]-1)
           nbr = A.rowval[ind]
@@ -147,22 +180,32 @@ function neighborMin(A,v)
   (c, w)
 end
 
-c(x) = _->x
-
-# Make a distance matrix assuming all edges out of node i
-# have length p[i]
+"Make a distance matrix assuming all edges out of node i have length p[i]"
 function mkDistMat(A::Graph, p::Vector{Float64})
   nzval = collect(Iterators.flatten(
     [p[vi] for ind in A.colptr[vi]:(A.colptr[vi+1]-1)] for vi in 1:A.m))
   SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, nzval)
 end
 
-
-# Make a rate vector
+"Make a rate vector"
 mkP(a, n) = a ./ (n .* maximum(a))
 
-# Approximate exponential params from Bernoulli params
-prToLam(p) = -log(-p + 1)
+"Approximate continuous params from discrete ones"
+toContinuous(p) = -log(-p + 1)
+
+"Sample from a policy"
+function randStep(m::Graph, loc::Int)::Int
+  inds = m.colptr[loc]:(m.colptr[loc+1]-1)
+  wsample(m.rowval[inds], m.nzval[inds])
+end
+@views randStep(m::Matrix{Float64}, loc::Int)::Int = wsample(m[:,loc])
+
+plotG(net::RoadNet, args...) = plotG(net.lg, net, args...)
+plotG(g::Graph, net::RoadNet, args...) = plotG(LG.DiGraph(g'), net, args...)
+plotG(g::LG.DiGraph, net::RoadNet, sizes::Vector{Float64}=net.lam) =
+  gplot(g, net.xs, net.ys; arrowlengthfrac=0.06, nodesize=sizes)
+plotG(g::LG.Graph, net::RoadNet, sizes::Vector{Float64}=net.lam) =
+  gplot(g, net.xs, net.ys; nodesize=sizes)
 
 include("simulation.jl")
 
