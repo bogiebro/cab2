@@ -3,11 +3,12 @@ using Reexport
 import LightGraphs; const LG = LightGraphs
 import Laplacians; const Lap = Laplacians
 import FunctionWrappers; const Fn = FunctionWrappers.FunctionWrapper
+import PyCall
 using Reel, GraphPlot
 const Itr = Iterators
 const T = Tuple
 
-@reexport using Plots, Distributions, LinearAlgebra, SparseArrays, Random
+@reexport using PyPlot, Distributions, LinearAlgebra, SparseArrays, Random
 
 export LG, Lap,
        randPol, greedyPol, greedyPolProp, hotPtrs, greedyF, greedyBF,

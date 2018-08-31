@@ -1,7 +1,7 @@
 export uni, solo, ratios,
-       MaxCars, NodeSOLFrac, TaxiEmptyFrac, NodeWaitTimes,
-       indivB, indivE, competB, withNTaxis, withTaxiDensity,
-       bench, Agg
+       maxCars, nodeSOLFrac, taxiEmptyFrac, nodeWaitTimes,
+       indivB, indivE, competP, withNTaxis, withTaxiDensity,
+       bench, S, P, F, id
 
 # Manipulating heterogenous policies
 
@@ -54,68 +54,67 @@ applySpec(p::PolSpec{Graph}, rho::Vector{Int})::PolSpec{Graph} = p
 
 # Statistics collection
 
-"Statistics collected during simulation for a single policy"
+"Stats that must be collected separately for each policy"
 abstract type PolStat end
 updateFound!(s::PolStat, t::Int) = nothing
 updateSearch!(s::PolStat, t::Int, l::Int, w::Float64) = nothing
 
-"Overall statistics collected during simulation"
+"Stats that must be collected globally for all policies"
 abstract type GblStat end
 updateGenerated!(s::GblStat, p::Vector{Int}) = nothing
 updateLeftover!(s::GblStat, p::Vector{Int}) = nothing
 updateRho!(s::GblStat, i::Int, p::Vector{Int}) = nothing
 
-"Construct a stat from (nTaxis, net)"
-struct MkPolStat f::Fn{PolStat, T{Int,RoadNet}} end
+"Construct a stat from (nTaxis, limit, net)"
+struct MkStat{X} f::Fn{X, T{Int,Int,RoadNet}} end
 
-"Construct a stat from (net, steps)"
-struct MkGblStat f::Fn{GblStat, T{RoadNet,Int}} end
-
-mutable struct MkSimStats
-  pol::Vector{MkPolStat}
-  gbl::Vector{MkGblStat}
+"Generalized 1d statistics type"
+struct SimVec{X,Y}
+  pol::Vector{X}
+  gbl::Vector{X}
 end
 
-addStat!(ps::MkSimStats, f::MkPolStat) = push!(ps.pol, f);
-addStat!(ps::MkSimStats, f::MkGblStat) = push!(ps.gbl, f);
-
-MkSimStats(f::DataType) = MkSimStats([f])
-function MkSimStats(fs::Vector{DataType})
-  stats = MkSimStats([],[])
-  for f in fs addStat!(stats, maker(f)); end
-  stats
+"Generalized nd statistics type"
+struct SimArray{X,Y}
+  pol::Array{X}
+  gbl::Array{X}
 end
 
+const SimStat = SimVec{Vector{PolStat}, GblStat}
+const S = SimVec{MkStat{PolStat}, MkStat{GblStat}}
+const P = SimArray{Symbol, Symbol}
+const F = SimArray{Function,Function}
+const SimRes = SimVec{Vector{Pair{DataType,Any}}, Pair{DataType,Any}}
 
-struct SimStats
-  pol::Vector{Vector{PolStat}}
-  gbl::Vector{GblStat}
+"Construct a SimStat from an S and necessary params"
+function initStats(nTaxis::Int, limit::Int, net::RoadNet, p::PolSpec, mkStats::S)
+  Random.seed!(1234)
+  SimStat([[s.f(o2 - o1, limit, net) for s in mkStats.pol]
+    for (o1,o2) in zip(p.offsets, Itr.rest(p.offsets, 2))],
+    [s.f(nTaxis, limit, net) for s in mkStats.gbl])
 end
 
-struct SimRes
-  pol::Vector{Vector{Any}}
-  gbl::Vector{Any}
-end
+"Construct a SimRes from a SimStat"
+finalizeStats(stats, limit) =
+  SimRes([[typeof(s)=>finalize(s, limit) for s in sp] for sp in stats.pol],
+    [typeof(s)=>finalize(s, limit) for s in stats.gbl])
 
-function runPolStat(f, x::Int, p::PolSpec, stats::SimStats, args...)
+"Add to the statistics about a given taxi"
+function runPolStats(f, x::Int, p::PolSpec, stats::SimStat, args...)
   ix = polIdx(p,x)
   for s in stats.pol[ix] f(s, x - p.offsets[ix], args...) end
 end
 
-function runGblStat(f, stats::SimStats, args...)
+"Add to global statistics"
+function runGblStats(f, stats::SimStat, args...)
   for s in stats.gbl f(s, args...) end
 end
 
 "Tracks the empty time of each taxi"
 struct TaxiEmptyFrac <: PolStat emptyTime::Vector{Float64} end
 
-# there are 799 following one policy, and one following the other
-# we're not doing the updateSearch thing right
-# we initialize with the correct number of taxis
-# but then, when people use an id, they must subtract the previous offset (or 0)
-# Might be easiest to always make the first offset 0
-
-maker(::Type{TaxiEmptyFrac}) = MkPolStat((nTaxis::Int, net::RoadNet)-> TaxiEmptyFrac(zeros(nTaxis)))
+const taxiEmptyFrac = MkStat{PolStat}((nTaxis::Int, _::Int, net::RoadNet)->
+  TaxiEmptyFrac(zeros(nTaxis)))
 updateSearch!(s::TaxiEmptyFrac, t::Int, l::Int, w::Float64) = s.emptyTime[t] += w;
 finalize(s::TaxiEmptyFrac, steps) = s.emptyTime ./ steps
 xlabel(::Type{TaxiEmptyFrac}) = "taxi"
@@ -127,7 +126,7 @@ struct NodeWaitTimes <: PolStat
   routes::Vector{Vector{Pair{Int,Int}}}
 end
 
-maker(::Type{NodeWaitTimes}) = MkPolStat((nTaxis::Int, net::RoadNet)-> NodeWaitTimes(
+const nodeWaitTimes = MkStat{PolStat}((nTaxis::Int, _::Int, net::RoadNet)-> NodeWaitTimes(
    [Int[] for _ in 1:length(net.lam)], [Pair{Int,Int}[] for _ in 1:nTaxis]))
 updateFound!(s::NodeWaitTimes, t::Int) = updatePath!(s.routes[t], s.waitTimes)
 updateSearch!(s::NodeWaitTimes, t::Int, l::Int, w::Float64) = push!(s.routes[t], l=>w);
@@ -141,20 +140,20 @@ struct NodeSOLFrac <: GblStat
   generated::Vector{Int}
 end
 
-maker(::Type{NodeSOLFrac}) = MkGblStat((net::RoadNet, steps::Int)->
+const nodeSOLFrac = MkStat{GblStat}((_::Int, _::Int, net::RoadNet)->
   NodeSOLFrac(zeros(Int, length(net.lam)), zeros(Int, length(net.lam))))
 updateGenerated!(s::NodeSOLFrac, p::Vector{Int}) = s.generated .+= p;
 updateLeftover!(s::NodeSOLFrac, p::Vector{Int}) = s.sol .+= p;
-finalize(s::NodeSOLFrac) = nonNan(s.sol ./ s.generated)
+finalize(s::NodeSOLFrac, steps) = nonNan(s.sol ./ s.generated)
 xlabel(::Type{NodeSOLFrac}) = "node"
 ylabel(::Type{NodeSOLFrac}) = "fraction of time without taxi"
 
 "Tracks the highest taxi density at each timestep"
 struct MaxCars <: GblStat cars::Vector{Int} end
 
-maker(::Type{MaxCars}) = MkGblStat((net::RoadNet, steps::Int)-> MaxCars(zeros(Int, steps)))
+const maxCars = MkStat{GblStat}((_::Int, lim::Int, net::RoadNet)-> MaxCars(zeros(Int, lim)))
 updateRho!(s::MaxCars, i::Int, rho::Vector{Int}) = s.cars[i] = maximum(rho);
-finalize(s::MaxCars) = s.cars
+finalize(s::MaxCars, steps) = s.cars
 xlabel(::Type{MaxCars}) = "time"
 ylabel(::Type{MaxCars}) = "highest taxi density"
 
@@ -174,17 +173,6 @@ maker(::Type{Vis}) = MkGblStat((net::RoadNet, steps::Int)->
 updateRho!(s::Vis, i::Int, rho::Vector{Int}) = push!(frames, s.f(rho))
 finalize(s::Vis) = s.frames
 =#
-
-function initStats(nTaxis::Int, net::RoadNet, limit::Int, p, stats)
-  mkStats = MkSimStats(stats)
-  SimStats([[s.f(o2 - o1, net) for s in mkStats.pol]
-    for (o1,o2) in zip(p.offsets, Itr.rest(p.offsets, 2))],
-    [s.f(net, limit) for s in mkStats.gbl])
-end
-
-finalizeStats(stats, limit) =
-  SimRes([[finalize(s, limit) for s in sp] for sp in stats.pol],
-    [finalize(s) for s in stats.gbl])
 
 
 # Utility functions
@@ -226,36 +214,36 @@ end
 
 # Simulation functions
 
-function competB(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
+function competP(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
   poissons = Poisson.(net.lam)
   nLocs = length(net.lam)
   nTaxis = length(locs)
   pf = MkPolSpec{PolFn}(pn).f(nTaxis)
   timers = zeros(Int, nTaxis)
-  stats = initStats(nTaxis, net, limit, pf, mkStats)
+  stats = initStats(nTaxis, limit, net, pf, mkStats)
   for i in 1:limit
     passengers = rand.(poissons)
-    runGblStat(updateGenerated!, stats, passengers)
+    runGblStats(updateGenerated!, stats, passengers)
     rho = locsToRho(locs, nLocs)
-    runGblStat(updateRho!, stats, i, rho) 
+    runGblStats(updateRho!, stats, i, rho) 
     p = applySpec(pf, rho)
     for taxi in randperm(nTaxis)
       if timers[taxi] == 0
         locs[taxi] = abs(locs[taxi])
         if passengers[locs[taxi]] > 0
           passengers[locs[taxi]] -= 1
-          runPolStat(updateSearch!, taxi, p, stats, locs[taxi], 1.0)
-          runPolStat(updateFound!, taxi, p, stats)
+          runPolStats(updateSearch!, taxi, p, stats, locs[taxi], 1.0)
+          runPolStats(updateFound!, taxi, p, stats)
           dest, dist = sampleDest(net.M, net.dists, locs[taxi])
           locs[taxi] = -dest
           timers[taxi] = dist
         else
-          runPolStat(updateSearch!, taxi, p, stats, locs[taxi], 1.0)
+          runPolStats(updateSearch!, taxi, p, stats, locs[taxi], 1.0)
           locs[taxi] = randStep(polMat(p, taxi), locs[taxi])
         end
       else timers[taxi] -= 1 end
     end
-    runGblStat(updateLeftover!, stats, passengers)
+    runGblStats(updateLeftover!, stats, passengers)
   end
   finalizeStats(stats, limit)
 end
@@ -275,19 +263,19 @@ function indivB(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
   nTaxis = length(locs)
   p = MkPolSpec{Graph}(pn).f(nTaxis)
   nLocs = length(net.lam)
-  stats = initStats(nTaxis, net, limit, p, mkStats)
+  stats = initStats(nTaxis, limit, net, p, mkStats)
   for i in 1:nTaxis
     loc = locs[i]
     t = 0
     while t < limit
       t += 1
       if rand() < net.lam[loc]
-        runPolStat(updateSearch!, i, p, stats, loc, 1.0)
-        runPolStat(updateFound!, i, p, stats)
+        runPolStats(updateSearch!, i, p, stats, loc, 1.0)
+        runPolStats(updateFound!, i, p, stats)
         loc, dist = sampleDest(net.M, net.dists, loc)
         t += Int(dist)
       else
-        runPolStat(updateSearch!, i, p, stats, loc, 1.0)
+        runPolStats(updateSearch!, i, p, stats, loc, 1.0)
         loc = randStep(polMat(p, i), loc)
       end
     end
@@ -300,7 +288,7 @@ function indivE(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
   nLocs = length(net.lam)
   nTaxis = length(locs)
   p = MkPolSpec{Graph}(pn).f(nTaxis)
-  stats = initStats(nTaxis, net, limit, p, mkStats)
+  stats = initStats(nTaxis, limit, net, p, mkStats)
   exps = Exponential.(1.0 ./ net.lam)
   for i in 1:nTaxis
     loc = rand(1:nLocs)
@@ -308,12 +296,12 @@ function indivE(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
     while t < limit
       a = min(rand(exps[loc]), limit - t)
       if a < net.len[loc]
-        runPolStat(updateSearch!, i, p, stats, loc, a)
-        runPolStat(updateFound!, i, p, stats)
+        runPolStats(updateSearch!, i, p, stats, loc, a)
+        runPolStats(updateFound!, i, p, stats)
         loc, dist = sampleDest(net.M, net.dists, loc)
         t += (a + dist)
       else
-        runPolStat(updateSearch!, i, p, stats, loc, net.len[loc])
+        runPolStats(updateSearch!, i, p, stats, loc, net.len[loc])
         t += net.len[loc]
         loc = randStep(polMat(p, i), loc)
       end
@@ -326,76 +314,67 @@ end
 # Benchmarking functions
 
 "Start a plot"
-function mkPlot(ty, stat)
+function mkPlot(ty, stat, nrows, ncols, i)
+  a = plt[:subplot](nrows, ncols, i)
   if ty == :hist
-    histogram(xlabel=ylabel(stat))
-  elseif ty == :scatter
-    plot(line=:scatter, xlabel=xlabel(stat), ylabel=ylabel(stat)) 
-  elseif ty == :line
-    plot(xlabel=xlabel(stat), ylabel=ylabel(stat)) 
+    plt[:xlabel](ylabel(stat))
+  else
+    plt[:xlabel](xlabel(stat))
+    plt[:ylabel](ylabel(stat))
   end
+  a
 end
 
 "Add a series to a plot"
-function addPlot!(ty, h, k, val)
- @assert !isempty(val)
+function addPlot!(ty, h, k, val::Vector{Float64})
  if ty == :hist
-   if length(val) == 1
-     histogram!(h, val, alpha=0.2, normalize=true, label=k, nbins=1)
-   else
-     histogram!(h, val, alpha=0.2, normalize=true, label=k)
-   end
+   h[:hist](val, alpha=0.2, density=true, label=k, ec="gray")
  elseif ty == :scatter
-   plot!(h, val, alpha=0.3, line=:scatter, label=k)
+   h[:plot](val, "o", alpha=0.3, label=k)
  elseif ty == :line
-   plot!(h, val, alpha=0.3, label=k)
+   h[:plot](val, alpha=0.3, label=k)
  end
 end
 
-struct Agg
-  f::Function
-  s::Any
-end
-Base.broadcastable(a::Agg) = Ref(a)
-
-unagg(x) = x
-unagg(a::Agg) = a.s
-unagg(v::Vector) = [unagg(a) for a in v]
-
-agg(x, y) = y
-agg(a::Agg, y) = nonNan(collect(map(a.f, y)))
-
-# This is doing the work twice! Do better!
-
 "Plot the result of a specific policy"
-function plotPol(hs, plts, stats, res, str)
+function plotPol(hs, plts, fns, res, str)
   if !isempty(res)
-    tuples = tuple.(res, plts, stats, hs)
+    fnRes = map.(fns, getindex.(res, 2))
+    for (i, r) in enumerate(fnRes)
+      println(str, "stat $i => $(mean(r))")
+    end
+    tuples = tuple.(fnRes, getindex.(res, 1), plts, hs)
+    n = length(tuples)
+    nrow = ncol = 1
+    if n > 1
+      ncol = 2
+      nrow = div(n, 2)
+    end
     h2s = []
-    for (i,(svec, plt, stat, h)) in enumerate(tuples)
-      r = agg(stat, svec)
-      h2 = (h == nothing ? mkPlot(plt, unagg(stat)) : h)
-      println(str, "stat $i ", mean(r), " of ", length(r))
-      push!(h2s, addPlot!(plt, h2, str, r))
+    for (i,(r, stat, plt, h)) in enumerate(tuples)
+      h2 = (h == nothing ? mkPlot(plt, stat, nrow, ncol, i) : h)
+      push!(h2s, h2)
+      addPlot!(plt, h2, str, r)
     end
     return h2s
   end
   hs
 end
 
+id(x) = x
+
 "Run a simulation with different policies and plot them"
-function bench(f, plts, net, stats, args...; pols...)
+function bench(f, net::RoadNet, stats::S, plts::P, fns::F, args...; pols...)
   hs = nothing
   for (k,p) in pols
-    Random.seed!(1234)
-    res = f(net, unagg(stats), p, args...)
-    flush(stdout)
-    hs = plotPol(hs, plts, stats, res.gbl, "$k gbl ")
+    res = f(net, stats, p, args...)
+    hs = plotPol(hs, plts.gbl, fns.gbl, res.gbl, "$k gbl ")
     for (i, pRes) in enumerate(res.pol)
-      hs = plotPol(hs, plts, stats, pRes, "$k pol $i ")
+      hs = plotPol(hs, plts.pol, fns.pol, pRes, "$k pol $i ")
     end
   end
   flush(stdout)
-  plot(hs...)
+  for h in hs h[:legend]() end
+  plt[:show]();
 end
 
