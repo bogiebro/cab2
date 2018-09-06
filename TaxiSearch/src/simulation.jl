@@ -1,7 +1,7 @@
 export uni, solo, ratios,
        maxCars, nodeSOLFrac, taxiEmptyFrac, nodeWaitTimes,
        indivB, indivE, competP, withNTaxis, withTaxiDensity,
-       bench, S, P, F, id
+       bench, S, P, F, id, oneEach
 
 # Manipulating heterogenous policies
 
@@ -222,7 +222,7 @@ function competP(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
   timers = zeros(Int, nTaxis)
   stats = initStats(nTaxis, limit, net, pf, mkStats)
   for i in 1:limit
-    passengers = rand.(poissons)
+    passengers = [rand(p) for p in poissons]
     runGblStats(updateGenerated!, stats, passengers)
     rho = locsToRho(locs, nLocs)
     runGblStats(updateRho!, stats, i, rho) 
@@ -254,6 +254,10 @@ withTaxiDensity(density, f) = (net::RoadNet, args...)-> begin
   f(rhoToLocs(rho0), net, args...)
 end
 
+"Start with a taxi on each node"
+oneEach(f) = (net::RoadNet, args...)->
+  f(collect(1:length(net.lam)), net, args...)
+
 "Start with a given number of taxis total, distributed randomly"
 withNTaxis(nTaxis, f) = (net::RoadNet, args...)->
   f(rand(1:length(net.lam), nTaxis), net, args...)
@@ -269,13 +273,12 @@ function indivB(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
     t = 0
     while t < limit
       t += 1
+      runPolStats(updateSearch!, i, p, stats, loc, 1.0)
       if rand() < net.lam[loc]
-        runPolStats(updateSearch!, i, p, stats, loc, 1.0)
         runPolStats(updateFound!, i, p, stats)
         loc, dist = sampleDest(net.M, net.dists, loc)
         t += Int(dist)
       else
-        runPolStats(updateSearch!, i, p, stats, loc, 1.0)
         loc = randStep(polMat(p, i), loc)
       end
     end
@@ -375,6 +378,7 @@ function bench(f, net::RoadNet, stats::S, plts::P, fns::F, args...; pols...)
   end
   flush(stdout)
   for h in hs h[:legend]() end
+  plt[:tight_layout]()
   plt[:show]();
 end
 
