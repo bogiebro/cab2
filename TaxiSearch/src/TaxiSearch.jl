@@ -1,5 +1,5 @@
 module TaxiSearch
-using Reexport
+using Reexport, DelimitedFiles
 import LightGraphs; const LG = LightGraphs
 import Laplacians; const Lap = Laplacians
 import FunctionWrappers; const Fn = FunctionWrappers.FunctionWrapper
@@ -14,16 +14,16 @@ export LG, Lap,
        randPol, greedyPol, greedyPolProp, hotPtrs, greedyF, greedyBF,
        iterated, fixedPoint, neighborMin, scorePolicy, ptrPolicy, randStep,
        routeDiff, nonNan, toDist, RoadNet, randM, justCycles,
-       getGraph, mkP, toContinuous, plotG, changeLen, c, fst
+       getGraph, mkP, toContinuous, plotG, changeLen
 
 const Graph = SparseMatrixCSC{Float64,Int}
 const Policy = Union{Graph, Matrix{Float64}}
 
 "Read a csv where each row is an edge"
 function getGraph(fname)
-  df = readcsv(fname, Int)
-  is = df[:,2]
-  js = df[:,1]
+  df = readdlm(fname, ',')
+  is = Int.(df[:,2])
+  js = Int.(df[:,1])
   g = sparse(is .+ 1, js .+ 1, 1.0)
   g .+ g'
 end
@@ -56,11 +56,18 @@ end
 
 function RoadNet(lg::LG.AbstractGraph{Int}, M, len, xs, ys)
   g = copy(LG.adjacency_matrix(lg, Float64)')
+  p = rand(Exponential(0.1), size(g)[1])
+  RoadNet(g, lg, M, len, p, xs, ys)
+end
+
+function RoadNet(g, lg, M, len, p, xs, ys)
   dmat = len == nothing ? LG.weights(lg) : mkDistMat(g, len)
   fwState = LG.floyd_warshall_shortest_paths(lg, dmat)
-  RoadNet(g, lg, rand(Exponential(0.1), size(g)[1]),
+  RoadNet(g, lg, p,
     xs, ys, Float64.(fwState.dists), M, fwState.parents, len)
 end
+
+RoadNet(g::Graph, M, len, p, xs, ys) = RoadNet(g, LG.DiGraph(g'), M, len, p, xs, ys)
 
 function changeLen(net::RoadNet, l::Vector{Float64})
   dmat = mkDistMat(net.g, l)
@@ -97,6 +104,7 @@ greedyPolProp(net) = scorePolicy(net.lam, net.g)
 greedyF(net) = x::Vector{Int}-> scorePolicy(net.lam ./ (x .+ 1), net.g)
 greedyBF(net) = x::Vector{Int}-> ptrPolicy(neighborMin(net.g,
   collect(zip(net.lam, 1.0 / Float64.(x .+ 1))))[2])
+
 
 "Keeps only the cycles of a graph"
 justCycles(g::Graph) = justCycles(LG.DiGraph(g'))
@@ -201,13 +209,14 @@ function randStep(m::Graph, loc::Int)::Int
 end
 @views randStep(m::Matrix{Float64}, loc::Int)::Int = wsample(m[:,loc])
 
-plotG(net::RoadNet, args...) = plotG(net.lg, net, args...)
-plotG(g::Graph, net::RoadNet, args...) = plotG(LG.DiGraph(g'), net, args...)
-plotG(g::LG.DiGraph, net::RoadNet, sizes::Vector{Float64}=net.lam) =
-  gplot(g, net.xs, net.ys; arrowlengthfrac=0.06, nodesize=sizes)
-plotG(g::LG.Graph, net::RoadNet, sizes::Vector{Float64}=net.lam) =
-  gplot(g, net.xs, net.ys; nodesize=sizes)
+plotG(net::RoadNet, args...; kwargs...) = plotG(net.lg, net, args...; kwargs...)
+plotG(g::Graph, net::RoadNet, args...; kwargs...) = plotG(LG.DiGraph(g'), net, args...; kwargs...)
+plotG(g::LG.DiGraph, net::RoadNet, sizes::Vector{Float64}=net.lam; kwargs...) =
+  gplot(g, net.xs, net.ys; arrowlengthfrac=0.06, nodesize=sizes, kwargs...)
+plotG(g::LG.Graph, net::RoadNet, sizes::Vector{Float64}=net.lam; kwargs...) =
+  gplot(g, net.xs, net.ys; nodesize=sizes, kwargs...)
 
 include("simulation.jl")
+include("waitsum.jl")
 
 end # module
