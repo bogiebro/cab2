@@ -189,6 +189,14 @@ function neighborMin(A::Graph,v::Vector{NTuple{N,Float64}}) where {N}
   (c, w)
 end
 
+"Expected waiting time for a single taxi"
+function a1Min(A, lam)
+  vals = fixedPoint(x->lam .+ (1 .- lam) .* (1 .+ neighborMin(A, x)[1]), 1 ./ lam)
+  ptrs = neighborMin(A, vals)[2]
+  pol = ptrPolicy(ptrs)
+  (pol, vals, ptrs)
+end
+
 "Make a distance matrix assuming all edges out of node i have length p[i]"
 function mkDistMat(A::Graph, p::Vector{Float64})
   nzval = collect(Iterators.flatten(

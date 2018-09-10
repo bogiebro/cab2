@@ -16,6 +16,12 @@ git-tree-sha1 = "036ce44a518b912c43df728bfae274f8d8de9059"
 uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 version = "0.3.1"
 
+[[ArnoldiMethod]]
+deps = ["DelimitedFiles", "LinearAlgebra", "Pkg", "Random", "SparseArrays", "Test"]
+git-tree-sha1 = "a5f9581eaf9371fe12b4a0b12c05690b45912e71"
+uuid = "ec485272-7323-5ecc-a04f-4719b315124d"
+version = "0.0.2"
+
 [[Arpack]]
 deps = ["BinaryProvider", "Libdl", "LinearAlgebra", "Random", "SparseArrays", "Test"]
 git-tree-sha1 = "5b046410fb617d9cf2f8bc0edd5da05a2e5a2ad4"
@@ -189,9 +195,9 @@ uuid = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 
 [[Distributions]]
 deps = ["Distributed", "LinearAlgebra", "PDMats", "Pkg", "Printf", "QuadGK", "Random", "SpecialFunctions", "Statistics", "StatsBase", "StatsFuns", "Test"]
-git-tree-sha1 = "07f0e38d8a9c8151af4d843500de1bf0baa59dca"
+git-tree-sha1 = "c24e9b6500c037673f0241a2783472b8c3d080c7"
 uuid = "31c24e10-a181-5473-b8eb-7969acd0382f"
-version = "0.16.3"
+version = "0.16.4"
 
 [[FFTViews]]
 deps = ["CustomUnitRanges", "FFTW", "Test"]
@@ -221,10 +227,10 @@ uuid = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
 version = "0.5.3"
 
 [[Flux]]
-deps = ["AbstractTrees", "Adapt", "Colors", "DiffRules", "ForwardDiff", "GZip", "Juno", "LinearAlgebra", "MacroTools", "NNlib", "NaNMath", "Printf", "Random", "Reexport", "Requires", "SpecialFunctions", "Statistics", "StatsBase", "Test", "ZipFile"]
-git-tree-sha1 = "35a4b1460214c342d305647d0bbd8947534ab819"
+deps = ["AbstractTrees", "Adapt", "CodecZlib", "Colors", "DiffRules", "ForwardDiff", "Juno", "LinearAlgebra", "MacroTools", "NNlib", "NaNMath", "Printf", "Random", "Reexport", "Requires", "SpecialFunctions", "Statistics", "StatsBase", "Test", "ZipFile"]
+path = "/home/sam/.julia/dev/Flux"
 uuid = "587475ba-b771-5e3f-ad9e-33799f191a9c"
-version = "0.6.6"
+version = "0.6.7+"
 
 [[ForwardDiff]]
 deps = ["CommonSubexpressions", "DiffResults", "DiffRules", "InteractiveUtils", "LinearAlgebra", "NaNMath", "Pkg", "Random", "SparseArrays", "SpecialFunctions", "StaticArrays", "Test"]
@@ -237,12 +243,6 @@ deps = ["Compat", "Pkg"]
 git-tree-sha1 = "49bf793ebd37db5adaa7ac1eae96c2c97ec86db5"
 uuid = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
 version = "1.0.0"
-
-[[GZip]]
-deps = ["Libdl", "Pkg", "Test"]
-git-tree-sha1 = "ee443ef166b29282301468d8af403e1ed8f5412e"
-uuid = "92fee26a-97fe-5a0c-ad85-20a5f3185b63"
-version = "0.5.0"
 
 [[Glob]]
 deps = ["Compat", "Pkg", "Test"]
@@ -264,9 +264,9 @@ version = "0.3.0"
 
 [[Gtk]]
 deps = ["BinDeps", "Cairo", "Compat", "Graphics", "Homebrew", "Libdl", "Pkg", "Reexport", "Serialization", "Test", "WinRPM"]
-git-tree-sha1 = "d3a195cfae66e0364346a881d4227dee10d791d6"
+git-tree-sha1 = "33b4d74f0097894373a2fd86db0a8c04012d2b55"
 uuid = "4c0ca9eb-093a-5379-98c5-f87ac0bbbf44"
-version = "0.16.2"
+version = "0.16.3"
 
 [[GtkReactive]]
 deps = ["Cairo", "Colors", "Dates", "FixedPointNumbers", "Graphics", "Gtk", "IntervalSets", "Pkg", "Reactive", "Reexport", "RoundingIntegers", "Test"]
@@ -275,10 +275,10 @@ uuid = "27996c0f-39cd-5cc1-a27a-05f136f946b6"
 version = "0.5.1"
 
 [[HDF5]]
-deps = ["BinDeps", "Blosc", "Distributed", "Homebrew", "Libdl", "LinearAlgebra", "Pkg", "Test", "WinRPM"]
-git-tree-sha1 = "a898e5dac9aa5824deb55aad8bd44b4574972cf8"
+deps = ["BinDeps", "Blosc", "Distributed", "Homebrew", "Libdl", "LinearAlgebra", "Mmap", "Pkg", "Test", "WinRPM"]
+git-tree-sha1 = "8c3bcdb44db436cd20106e2381e1c1ac96aa0ee3"
 uuid = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
-version = "0.10.1"
+version = "0.10.2"
 
 [[HTTPClient]]
 deps = ["Compat", "LibCURL"]
@@ -334,11 +334,17 @@ git-tree-sha1 = "e94f43b9ff76f3a3810bfdd9b3d2fbcacbc26fd0"
 uuid = "787d08f9-d448-5407-9aad-5290dd7ab264"
 version = "0.1.1"
 
+[[ImageShow]]
+deps = ["Base64", "ColorTypes", "Colors", "FileIO", "FixedPointNumbers", "ImageCore", "InteractiveUtils", "Pkg", "Requires", "Test"]
+git-tree-sha1 = "ee5396bd0cf2ce72e34e9b36fd359d7527311973"
+uuid = "4e3cecfd-b093-5904-9786-8bbb286a6a31"
+version = "0.1.1"
+
 [[ImageTransformations]]
-deps = ["AxisAlgorithms", "ColorTypes", "ColorVectorSpace", "Colors", "CoordinateTransformations", "FixedPointNumbers", "IdentityRanges", "ImageCore", "InteractiveUtils", "Interpolations", "LinearAlgebra", "OffsetArrays", "Pkg", "StaticArrays", "Test"]
-git-tree-sha1 = "bd02b0dd87fd1283bf383e0e6fab934a6b0453d4"
+deps = ["AxisAlgorithms", "ColorTypes", "ColorVectorSpace", "Colors", "CoordinateTransformations", "FixedPointNumbers", "IdentityRanges", "ImageCore", "Interpolations", "LinearAlgebra", "OffsetArrays", "Pkg", "StaticArrays", "Test"]
+git-tree-sha1 = "dad4b267df7b2960ca9988ea3acfdc9ada4344e7"
 uuid = "02fcd773-0e25-5acc-982a-7f6622650795"
-version = "0.5.0"
+version = "0.5.2"
 
 [[ImageView]]
 deps = ["AxisArrays", "Cairo", "ColorVectorSpace", "Colors", "FileIO", "FixedPointNumbers", "Graphics", "Gtk", "GtkReactive", "Images", "MappedArrays", "Pkg", "RoundingIntegers", "StatsBase", "Test"]
@@ -347,10 +353,10 @@ uuid = "86fae568-95e7-573e-a6b2-d8a6b900c9ef"
 version = "0.8.0"
 
 [[Images]]
-deps = ["AxisArrays", "Base64", "ColorTypes", "ColorVectorSpace", "Colors", "FileIO", "FixedPointNumbers", "Graphics", "ImageAxes", "ImageCore", "ImageDistances", "ImageFiltering", "ImageMetadata", "ImageMorphology", "ImageTransformations", "IndirectArrays", "InteractiveUtils", "LinearAlgebra", "MappedArrays", "OffsetArrays", "Pkg", "Random", "Reexport", "SIUnits", "SparseArrays", "StaticArrays", "Statistics", "StatsBase", "Test", "TiledIteration"]
-git-tree-sha1 = "9fef51c7d544490f7b4acc41dc5b82d4d1dffc09"
+deps = ["AxisArrays", "Base64", "ColorTypes", "ColorVectorSpace", "Colors", "FileIO", "FixedPointNumbers", "Graphics", "ImageAxes", "ImageCore", "ImageDistances", "ImageFiltering", "ImageMetadata", "ImageMorphology", "ImageShow", "ImageTransformations", "IndirectArrays", "InteractiveUtils", "LinearAlgebra", "MappedArrays", "OffsetArrays", "Pkg", "Random", "Reexport", "SIUnits", "SparseArrays", "StaticArrays", "Statistics", "StatsBase", "Test", "TiledIteration"]
+git-tree-sha1 = "73e21f66a8968d52ccf93b9c9c6a46e652d33d4e"
 uuid = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
-version = "0.15.1"
+version = "0.16.0"
 
 [[IndirectArrays]]
 deps = ["Compat", "Pkg", "Test"]
@@ -429,10 +435,10 @@ uuid = "2ec943e9-cfe8-584d-b93d-64dcb6d567b7"
 version = "1.0.0"
 
 [[LightGraphs]]
-deps = ["Arpack", "Base64", "CodecZlib", "DataStructures", "DelimitedFiles", "Distributed", "LinearAlgebra", "Markdown", "Pkg", "Random", "SharedArrays", "SimpleTraits", "SparseArrays", "Statistics", "Test"]
-git-tree-sha1 = "fd35b52d1e347e71dfec1e2bf5dbc7d5a46db8ec"
+deps = ["ArnoldiMethod", "Base64", "CodecZlib", "DataStructures", "DelimitedFiles", "Distributed", "LinearAlgebra", "Markdown", "Pkg", "Random", "SharedArrays", "SimpleTraits", "SparseArrays", "Statistics", "Test"]
+git-tree-sha1 = "446a9cf208ec401ae67e517de4eeceaf2cd5cdac"
 uuid = "093fc24a-ae57-5d10-9952-331d41423f4d"
-version = "1.0.2"
+version = "1.1.0"
 
 [[LinearAlgebra]]
 deps = ["Libdl"]
@@ -486,9 +492,9 @@ uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 
 [[NNlib]]
 deps = ["Libdl", "LinearAlgebra", "MacroTools", "Requires", "Test"]
-git-tree-sha1 = "1375b53e79080b37705a4040c97f1ded4e332cac"
+git-tree-sha1 = "d7f65ad9734adea3c5a4c473bc65b365f8afbb2b"
 uuid = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
-version = "0.4.1"
+version = "0.4.2"
 
 [[NaNMath]]
 deps = ["Compat"]
@@ -612,11 +618,17 @@ git-tree-sha1 = "f6fbf4ba64d295e146e49e021207993b6b48c7d1"
 uuid = "ae029012-a4dd-5104-9daa-d747884805df"
 version = "0.5.2"
 
+[[ResumableFunctions]]
+deps = ["MacroTools", "Test"]
+git-tree-sha1 = "ad61c88cc4829a96eaa4abcd9c66828b49af2910"
+uuid = "c5292f4c-5179-55e1-98c5-05642aab7184"
+version = "0.4.0"
+
 [[Revise]]
 deps = ["Distributed", "FileWatching", "InteractiveUtils", "LibGit2", "OrderedCollections", "Pkg", "REPL", "Random", "Test", "UUIDs", "Unicode"]
-git-tree-sha1 = "217ba3dc853bc3acb9f5f6ae6b75fd1a33936914"
+git-tree-sha1 = "1e47863baff3de14d4c045382ef0416ddb45c768"
 uuid = "295af30f-e4ad-537b-8983-00126c2a3abe"
-version = "0.7.7"
+version = "0.7.9"
 
 [[Rmath]]
 deps = ["BinaryProvider", "Libdl", "Pkg", "Random", "Statistics", "Test"]
@@ -763,7 +775,7 @@ version = "0.4.0"
 
 [[VisdomLog]]
 deps = ["PyCall"]
-git-tree-sha1 = "d01b865ab4a723f749d946682b490fa38f44e08e"
+git-tree-sha1 = "d609362e987d57a3d0a08109dd5c8c4d3214f5b6"
 repo-rev = "master"
 repo-url = "/home/sam/VisdomLog"
 uuid = "b9b00f16-b148-11e8-1d80-65f62d8fa156"
