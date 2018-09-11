@@ -1,5 +1,5 @@
 using ResumableFunctions, DataStructures
-export nStepTabular, untilStopped
+export nStepTabular, untilStopped, mcTabular, greedyAction
 
 # Training utilities
 
@@ -24,16 +24,19 @@ function addTaxi(a, i)
   a2
 end
 
+function greedyAction(net, rho, predict, l)
+  inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
+  best = argmin(predict.(addTaxi(rho, net.g.rowval[i]) for i in inds))
+  net.g.rowval[inds[best]]
+end
+
 function moveTaxis(rho, net, predict)
   nTaxis = sum(rho)
   locs = rhoToLocs(rho)
   for t in 1:nTaxis
     l = locs[t]
     rho[l] -= 1
-    inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
-    best = argmin(predict.(addTaxi(rho, net.g.rowval[i])
-      for i in inds))
-    rho[net.g.rowval[inds[best]]] += 1
+    rho[greedyAction(net, rho, predict, l)] += 1
   end
   rho
 end
@@ -49,7 +52,6 @@ end
 
 # Tabular case
 
-# doesn't work with Revise. 
 @resumable function easyStates()
   for i in 1:16
     @yield hot(16, i)
@@ -61,17 +63,52 @@ end
   end 
 end
 
-const Memory = Pair{Vector{Int}, Float64}
+function mcTabular(net)
+  lamSampler = Poisson.(net.lam)
+  states = DefaultDict{Vector{Int}, Pair{Float64, Int}}(0.0=>1)
+  predict(ρ) = states[ρ][1]
+  for (i,ρ) in Itr.take(enumerate(Itr.cycle(easyStates())), 50000)
+    history = Vector{Tuple{Vector{Int}, Float64, Bool}}()
+    while true
+      seen = Set{Vector{Int}}()
+      ρSum = sum(ρ)
+      if ρSum == 0
+        cumSum = 0
+        for (k,v,b) in Itr.reverse(history)
+          cumSum += v
+          if !b
+            oldVal, oldN = states[k]
+            states[k] = (oldVal + (1.0 / oldN) * (cumSum - oldVal)) => (oldN + 1)
+          end
+        end
+        break
+      else
+        push!(history, (ρ, ρSum, ρ in seen))
+        push!(seen, ρ)
+      end
+      ρ = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, predict)
+    end
+  end
+  states
+end
 
+
+# If this doesn't work, what might be simpler?
+# Note that we expect the single agent case to do well if we only have 2 agents. 
+
+
+
+
+# what if we start it with the one taxi prediction?
+# and the default value is n times the one taxi prediction 
 # do we not need to separate prediction from improvement phase?
-# ah- we need to worry about first passage time too
 function nStepTabular(net, n=6)
   lr = 0.001
   lamSampler = Poisson.(net.lam)
   states = DefaultDict{Vector{Int}, Float64}(0.0)
   oldStates = copy(states)
   predict(ρ) = oldStates[ρ]
-  history = CircularBuffer{Memory}(n - 1)
+  history = CircularBuffer{Pair{Vector{Int}, Float64}}(n - 1)
   for (i,ρ) in Itr.take(enumerate(Itr.cycle(easyStates())), 500000)
     tdSum = 0.0
     tdN = 0
@@ -109,8 +146,8 @@ function nStepTabular(net, n=6)
       push!(history, ρ=>ρSum)
       ρ = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, predict)
     end
-    if i % 2000 == 999 merge!(oldStates, states) end
-    if i % 3000 == 999 lr *= 0.9 end
+    #if i % 2000 == 999 merge!(oldStates, states) end
+    if i % 3000 == 2999 lr *= 0.9 end
     if i % 6000 == 0
       @info "Average td error $(tdSum / tdN)"
       tdSum = 0.0

@@ -1,7 +1,7 @@
 export uni, solo, ratios,
        maxCars, nodeSOLFrac, taxiEmptyFrac, nodeWaitTimes,
        indivB, indivE, competP, withNTaxis, withTaxiDensity,
-       bench, S, P, F, id, oneEach
+       bench, S, P, F, id, oneEach, PolFn
 
 # Manipulating heterogenous policies
 
@@ -17,14 +17,15 @@ struct MkPolSpec{X}
 end
 
 "A policy that depends on rho"
-const PolFn = Fn{Graph,T{Vector{Int}}}
+const PolFn = Fn{Int,T{Vector{Int}, Int}}
 
-c(x::Graph) = PolFn(_->x)
+c(x::Graph) = PolFn((_,loc)-> randStep(x, loc))
 
 "Assume policies are constant and uniform unless otherwise specified"
 MkPolSpec{X}(p::MkPolSpec{X}) where {X} = p
 MkPolSpec{Graph}(p::Graph) = uni(p)
 MkPolSpec{PolFn}(p::Graph) = uni(c(p))
+MkPolSpec{PolFn}(p::PolFn) = uni(p)
 MkPolSpec{PolFn}(p::MkPolSpec{Graph}) = MkPolSpec{PolFn}(x-> begin
   polSpec = p.f(x)
   PolSpec(map(c, polSpec.pols), polSpec.offsets)
@@ -45,11 +46,6 @@ solo(f::X, g::X) where {X} = MkPolSpec{X}(n-> PolSpec([f, g], [0, 1, n]))
 "Assign policies from given weights"
 ratios(fs::Vector{X}, ws::Vector{Float64}) where {X} =
   MkPolSpec(n-> PolSpec(fs, cumsum(collect(I.flatten((0, ws)))) * n)) 
-
-"Turn a rho-dependent polspec into an independent one"
-applySpec(p::PolSpec{PolFn}, rho::Vector{Int})::PolSpec{Graph} =
-  PolSpec([f(rho) for f in p.pols], p.offsets)
-applySpec(p::PolSpec{Graph}, rho::Vector{Int})::PolSpec{Graph} = p
 
 
 # Statistics collection
@@ -221,25 +217,26 @@ function competP(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
   pf = MkPolSpec{PolFn}(pn).f(nTaxis)
   timers = zeros(Int, nTaxis)
   stats = initStats(nTaxis, limit, net, pf, mkStats)
+  rho = locsToRho(locs, nLocs)
   for i in 1:limit
     passengers = [rand(p) for p in poissons]
     runGblStats(updateGenerated!, stats, passengers)
-    rho = locsToRho(locs, nLocs)
     runGblStats(updateRho!, stats, i, rho) 
-    p = applySpec(pf, rho)
     for taxi in randperm(nTaxis)
       if timers[taxi] == 0
         locs[taxi] = abs(locs[taxi])
+        rho[locs[taxi]] -= 1
         if passengers[locs[taxi]] > 0
           passengers[locs[taxi]] -= 1
-          runPolStats(updateSearch!, taxi, p, stats, locs[taxi], 1.0)
-          runPolStats(updateFound!, taxi, p, stats)
+          runPolStats(updateSearch!, taxi, pf, stats, locs[taxi], 1.0)
+          runPolStats(updateFound!, taxi, pf, stats)
           dest, dist = sampleDest(net.M, net.dists, locs[taxi])
           locs[taxi] = -dest
           timers[taxi] = dist
         else
-          runPolStats(updateSearch!, taxi, p, stats, locs[taxi], 1.0)
-          locs[taxi] = randStep(polMat(p, taxi), locs[taxi])
+          runPolStats(updateSearch!, taxi, pf, stats, locs[taxi], 1.0)
+          locs[taxi] = polMat(pf, taxi)(rho, locs[taxi])
+          rho[locs[taxi]] += 1
         end
       else timers[taxi] -= 1 end
     end
