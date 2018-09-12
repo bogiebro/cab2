@@ -82,9 +82,16 @@ const P = SimArray{Symbol, Symbol}
 const F = SimArray{Function,Function}
 const SimRes = SimVec{Vector{Pair{DataType,Any}}, Pair{DataType,Any}}
 
+eltMean(x) = map((args...)->mean(args), x...)
+
+mergeSimRes(a::Vector{SimRes}) = 
+  SimRes(
+    map.((args...)->args[1][1]=>vcat(map(x->x[2], args)...), map(x->x.pol, a)...),
+    a[1].gbl)
+    #map((args...)->args[1][1]=>eltMean(map(x->x[2], args)), map(x->x.gbl, a)...))
+
 "Construct a SimStat from an S and necessary params"
 function initStats(nTaxis::Int, limit::Int, net::RoadNet, p::PolSpec, mkStats::S)
-  Random.seed!(1234)
   SimStat([[s.f(o2 - o1, limit, net) for s in mkStats.pol]
     for (o1,o2) in zip(p.offsets, Itr.rest(p.offsets, 2))],
     [s.f(nTaxis, limit, net) for s in mkStats.gbl])
@@ -364,10 +371,11 @@ end
 id(x) = x
 
 "Run a simulation with different policies and plot them"
-function bench(f, net::RoadNet, stats::S, plts::P, fns::F, args...; pols...)
+function bench(f, net::RoadNet, stats::S, plts::P, fns::F, n, args...; pols...)
   hs = nothing
   for (k,p) in pols
-    res = f(net, stats, p, args...)
+    Random.seed!(1234)
+    res = mergeSimRes([f(net, stats, p, args...) for _ in 1:n])
     hs = plotPol(hs, plts.gbl, fns.gbl, res.gbl, "$k gbl ")
     for (i, pRes) in enumerate(res.pol)
       hs = plotPol(hs, plts.pol, fns.pol, pRes, "$k pol $i ")

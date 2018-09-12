@@ -1,4 +1,4 @@
-using ResumableFunctions, DataStructures
+using ResumableFunctions, DataStructures, Flux
 export nStepTabular, untilStopped, mcTabular, greedyAction
 
 # Training utilities
@@ -30,15 +30,17 @@ function greedyAction(net, rho, predict, l)
   net.g.rowval[inds[best]]
 end
 
-function moveTaxis(rho, net, predict)
-  nTaxis = sum(rho)
-  locs = rhoToLocs(rho)
-  for t in 1:nTaxis
+function moveTaxis(rho, locs, net, predict, eps)
+  for t in 1:length(locs)
     l = locs[t]
+    if l <= 0 continue end
     rho[l] -= 1
-    rho[greedyAction(net, rho, predict, l)] += 1
+    l2 = rand() >= eps ? greedyAction(net, rho, predict, l) :
+      net.g.rowval[rand(net.g.colptr[l]:(net.g.colptr[l+1]-1))]
+    locs[t] = l2
+    rho[l2] += 1
   end
-  rho
+  (rho, locs)
 end
 
 function hot(len, ixs)
@@ -49,6 +51,18 @@ function hot(len, ixs)
   a 
 end
 
+function pickup(rho, locs, poissons)
+  passengers = rand.(poissons)
+  for taxi in randperm(length(locs))
+    l = locs[taxi]
+    if l > 0 && passengers[l] > 0
+      passengers[l] -= 1
+      rho[l] -= 1
+      locs[taxi] = -1
+    end
+  end
+  (rho, locs)
+end
 
 # Tabular case
 
@@ -63,39 +77,40 @@ end
   end 
 end
 
+
 function mcTabular(net)
   lamSampler = Poisson.(net.lam)
   states = DefaultDict{Vector{Int}, Pair{Float64, Int}}(0.0=>1)
   predict(ρ) = states[ρ][1]
-  for (i,ρ) in Itr.take(enumerate(Itr.cycle(easyStates())), 50000)
-    history = Vector{Tuple{Vector{Int}, Float64, Bool}}()
-    while true
-      seen = Set{Vector{Int}}()
-      ρSum = sum(ρ)
-      if ρSum == 0
-        cumSum = 0
-        for (k,v,b) in Itr.reverse(history)
-          cumSum += v
-          if !b
-            oldVal, oldN = states[k]
-            states[k] = (oldVal + (1.0 / oldN) * (cumSum - oldVal)) => (oldN + 1)
+  for ρStart in easyStates()
+    for attempt in 1:500
+      ρ = copy(ρStart)
+      locs = rhoToLocs(ρ)
+      history = Vector{Tuple{Vector{Int}, Float64, Bool}}()
+      while true
+        seen = Set{Vector{Int}}()
+        ρSum = sum(ρ)
+        if ρSum == 0
+          cumSum = 0
+          for (k,v,b) in Itr.reverse(history)
+            cumSum += v
+            if !b
+              oldVal, oldN = states[k]
+              states[k] = (oldVal + (1.0 / oldN) * (cumSum - oldVal)) => (oldN + 1)
+            end
           end
+          break
+        else
+          push!(history, (ρ, ρSum, ρ in seen))
+          push!(seen, ρ)
         end
-        break
-      else
-        push!(history, (ρ, ρSum, ρ in seen))
-        push!(seen, ρ)
+        ρ, locs = pickup(ρ, locs, lamSampler)
+        ρ, locs = moveTaxis(ρ, locs, net, predict, 0.9)
       end
-      ρ = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, predict)
     end
   end
-  states
+  predict
 end
-
-
-# If this doesn't work, what might be simpler?
-# Note that we expect the single agent case to do well if we only have 2 agents. 
-
 
 
 
@@ -146,7 +161,7 @@ function nStepTabular(net, n=6)
       push!(history, ρ=>ρSum)
       ρ = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, predict)
     end
-    #if i % 2000 == 999 merge!(oldStates, states) end
+    if i % 2000 == 999 merge!(oldStates, states) end
     if i % 3000 == 2999 lr *= 0.9 end
     if i % 6000 == 0
       @info "Average td error $(tdSum / tdN)"
@@ -157,33 +172,35 @@ function nStepTabular(net, n=6)
   predict
 end
 
+# In the simulation:
+# Every round, a turn order is established randomly. 
+# Then each taxi takes their turn moving
 
-# Right. Why does this not work?
-# Is there a bug?
-      
 
-# Truncated(Normal(0, 1), 0, 4)
 
-#=
-function trainedModel(net)
+function trainedModel(net; lr=0.0005, nSampler=Truncated(Normal(0, 20), 0, 50),
+  copyRate=100)
   #vd = Visdom("loss", [:loss])
   k = 1
   nLocs = length(net.lam)
-  model() = Chain(Dense(nLocs, 50, leakyrelu),
-    Dense(50, 50, leakyrelu), Dense(50, 1), x->x[1])
+  model() = Chain(Dense(nLocs, 1), x->x[1])
   q1 = model()
   q2 = model()
   lamSampler = Poisson.(net.lam)
-  opt = ADAM(Flux.params(q1), 0.0005)
-  
+  opt = ADAM(Flux.params(q1), lr)
+  history = CircularBuffer{Pair{Vector{Int}, Float64}}(n - 1)
   runningLoss = 0.0
-  for i in 1:100000
-    k = min(div(i, 500), 2)
-    if i % 10000 == 0
-      Flux.loadparams!(q2, Flux.params(q1))
-    end
-    n = rand(0:k)
-    ρ = locsToRho(rand(1:nLocs,n), nLocs)
+   
+  try
+    for episode in Itr.countfrom()
+      if episode % copyRate == 0
+        Flux.loadparams!(q2, Flux.params(q1))
+      end
+      n = rand(nSampler)
+      ρ = locsToRho(rand(1:nLocs,n), nLocs)
+    
+    
+    
     ρEnd = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, q2)
     ρSum = sum(ρ)
     timeEst = (ρSum == 0) ? 0.0 : ρSum + Flux.data(q2(ρEnd))
@@ -200,4 +217,3 @@ function trainedModel(net)
   q1
 end
 
-=#
