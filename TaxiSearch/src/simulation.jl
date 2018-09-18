@@ -192,7 +192,8 @@ function rhoToLocs(rho)
   locs
 end
 
-function locsToRho(locs, nLocs)::Vector{Int}
+# Make this full transition
+function locsToRho(locs, nLocs)
   rho = zeros(Int, nLocs)
   for l in locs
     if l > 0 rho[l] += 1 end

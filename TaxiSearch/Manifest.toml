@@ -17,10 +17,10 @@ uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 version = "0.3.1"
 
 [[ArnoldiMethod]]
-deps = ["DelimitedFiles", "LinearAlgebra", "Pkg", "Random", "SparseArrays", "Test"]
-git-tree-sha1 = "a5f9581eaf9371fe12b4a0b12c05690b45912e71"
+deps = ["DelimitedFiles", "LinearAlgebra", "Pkg", "Random", "SparseArrays", "StaticArrays", "Test"]
+git-tree-sha1 = "2b6845cea546604fb4dca4e31414a6a59d39ddcd"
 uuid = "ec485272-7323-5ecc-a04f-4719b315124d"
-version = "0.0.2"
+version = "0.0.4"
 
 [[Arpack]]
 deps = ["BinaryProvider", "Libdl", "LinearAlgebra", "Random", "SparseArrays", "Test"]
@@ -159,9 +159,9 @@ version = "0.2.0"
 
 [[DataStructures]]
 deps = ["InteractiveUtils", "REPL", "Random", "Serialization", "Test"]
-git-tree-sha1 = "2afbbd0294306b0b74a753c196be50b35edb625c"
+git-tree-sha1 = "5162c360c52e9265e0bfafb71415c31f746f7e04"
 uuid = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
-version = "0.11.1"
+version = "0.12.0"
 
 [[Dates]]
 deps = ["Printf"]
@@ -258,9 +258,9 @@ version = "0.2.1+"
 
 [[Graphics]]
 deps = ["Colors", "Compat", "NaNMath"]
-git-tree-sha1 = "4671f2427ea4494a5d14fd485c4aa61ec1fb7cd2"
+git-tree-sha1 = "e3ead4211073d4117a0d2ef7d1efc5c8092c8412"
 uuid = "a2bd30eb-e257-5431-a919-1863eab51364"
-version = "0.3.0"
+version = "0.4.0"
 
 [[Gtk]]
 deps = ["BinDeps", "Cairo", "Compat", "Graphics", "Homebrew", "Libdl", "Pkg", "Reexport", "Serialization", "Test", "WinRPM"]
@@ -411,10 +411,10 @@ uuid = "6f8e5838-0efe-5de0-80a3-5fb4f8dbb1de"
 version = "1.0.1"
 
 [[LibCURL]]
-deps = ["BinaryProvider", "Compat", "Libdl", "Pkg"]
-git-tree-sha1 = "13cace3a2a2e76de68024c0b2c1a1bf00ee81b88"
+deps = ["BinaryProvider", "Compat", "Libdl", "Pkg", "Printf"]
+git-tree-sha1 = "6339c87cb76923a3cf947fcd213cbc364355c9c9"
 uuid = "b27032c2-a3e7-50c8-80cd-2d36dbcbfd21"
-version = "0.3.2"
+version = "0.4.1"
 
 [[LibExpat]]
 deps = ["Compat", "Pkg"]
@@ -470,10 +470,10 @@ deps = ["Base64"]
 uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
 
 [[Measures]]
-deps = ["Compat"]
-git-tree-sha1 = "9cdd05418a7f2f7ce534014285edf01f465d6961"
+deps = ["Pkg", "Test"]
+git-tree-sha1 = "ddfd6d13e330beacdde2c80de27c1c671945e7d9"
 uuid = "442fdcdd-2543-5da2-b0f3-8c86c306513e"
-version = "0.2.0"
+version = "0.3.0"
 
 [[Media]]
 deps = ["MacroTools", "Test"]
@@ -509,10 +509,10 @@ uuid = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
 version = "0.8.1"
 
 [[OrderedCollections]]
-deps = ["Random", "Serialization", "Test"]
-git-tree-sha1 = "cc23c786049328c93138da14e7020a464d707a23"
+deps = ["InteractiveUtils", "Pkg", "Random", "Serialization", "Test"]
+git-tree-sha1 = "27af6dc22697bf20ace8e3a45f404a34eaf0b819"
 uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
-version = "0.1.0"
+version = "1.0.0"
 
 [[PDMats]]
 deps = ["Arpack", "LinearAlgebra", "SparseArrays", "SuiteSparse", "Test"]
@@ -620,9 +620,9 @@ version = "0.5.2"
 
 [[ResumableFunctions]]
 deps = ["MacroTools", "Test"]
-git-tree-sha1 = "ad61c88cc4829a96eaa4abcd9c66828b49af2910"
+git-tree-sha1 = "0227fbf9bc596e6016d67d55a482ee2d01e19ed0"
 uuid = "c5292f4c-5179-55e1-98c5-05642aab7184"
-version = "0.4.0"
+version = "0.4.1"
 
 [[Revise]]
 deps = ["Distributed", "FileWatching", "InteractiveUtils", "LibGit2", "OrderedCollections", "Pkg", "REPL", "Random", "Test", "UUIDs", "Unicode"]
@@ -630,7 +630,7 @@ git-tree-sha1 = "48ad8dcdacf24185eb1bc4253a17dc39e1485079"
 repo-rev = "master"
 repo-url = "https://github.com/timholy/Revise.jl.git"
 uuid = "295af30f-e4ad-537b-8983-00126c2a3abe"
-version = "0.7.9+"
+version = "0.7.10+"
 
 [[Rmath]]
 deps = ["BinaryProvider", "Libdl", "Pkg", "Random", "Statistics", "Test"]
@@ -640,9 +640,9 @@ version = "0.5.0"
 
 [[Rotations]]
 deps = ["LinearAlgebra", "Pkg", "Random", "StaticArrays", "Statistics", "Test"]
-git-tree-sha1 = "448eb7dce980439d96472e7d0c3826ad539ed099"
+git-tree-sha1 = "ea5c3fec99390050a95ced28561484788b6d15b2"
 uuid = "6038ab10-8711-5258-84ad-4b1120ba62dc"
-version = "0.8.0"
+version = "0.9.0"
 
 [[RoundingIntegers]]
 deps = ["Pkg", "Test"]
@@ -777,9 +777,7 @@ version = "0.4.0"
 
 [[VisdomLog]]
 deps = ["PyCall"]
-git-tree-sha1 = "d609362e987d57a3d0a08109dd5c8c4d3214f5b6"
-repo-rev = "master"
-repo-url = "/home/sam/VisdomLog"
+path = "/home/sam/VisdomLog"
 uuid = "b9b00f16-b148-11e8-1d80-65f62d8fa156"
 version = "0.1.0"
 

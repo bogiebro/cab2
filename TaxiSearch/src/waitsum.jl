@@ -1,20 +1,33 @@
-using ResumableFunctions, DataStructures, Flux
-export nStepTabular, untilStopped, mcTabular, greedyAction
+using ResumableFunctions, DataStructures, Flux, Flux.Tracker, VisdomLog
+export trainModel, easyStates, SampledRho, NStep, VdLog, TxtLog, Logger
 
 # Training utilities
 
 struct StopTraining <: Exception end
-    
-@inline function untilStopped(f)
-  model = nothing
-  try model = f() catch e
-    if isa(e, StopTraining)
-      return model
+
+const RLState = Tuple{Vector{Int}, Vector{Int}, Int} # rho, locs, rhoSum
+
+function trainModel(net; eps=0.9, nLocs=length(net.lam), logger=Logger(),
+    sampler=SampledRho(nLocs=nLocs), model=NN(nLocs), alg=NStep())
+  lamSampler = Poisson.(net.lam)
+  try
+    for (episode, rlState::RLState) in enumerate(sampler)
+      startEpisode!(model, episode)
+      showLog(logger, episode)
+      reward = 0
+      while step!(alg, model, rlState, logger)
+        reward += rlState[3]
+        rlState = pickup(rlState, lamSampler)
+        rlState = moveTaxis(rlState, net, model, eps)
+      end
+      report!(logger, :reward, reward)
+      reset!(alg)
     end
+  catch e
+    if isa(e, StopTraining) return model end
     rethrow()
   end
 end
-
 
 # Taxi simulation
 
@@ -24,23 +37,25 @@ function addTaxi(a, i)
   a2
 end
 
-function greedyAction(net, rho, predict, l)
+function greedyAction(net, ρ, ρSum, model, l)
   inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
-  best = argmin(predict.(addTaxi(rho, net.g.rowval[i]) for i in inds))
+  best = argmin(predict.(model, ρSum, addTaxi(ρ, net.g.rowval[i]) for i in inds))
   net.g.rowval[inds[best]]
 end
 
-function moveTaxis(rho, locs, net, predict, eps)
+function moveTaxis((oldρ, oldLocs, ρSum), net, model, eps)
+  ρ = copy(oldρ)
+  locs = copy(oldLocs)
   for t in 1:length(locs)
     l = locs[t]
     if l <= 0 continue end
-    rho[l] -= 1
-    l2 = rand() >= eps ? greedyAction(net, rho, predict, l) :
+    ρ[l] -= 1
+    l2 = rand() >= eps ? greedyAction(net, ρ, ρSum, model, l) :
       net.g.rowval[rand(net.g.colptr[l]:(net.g.colptr[l+1]-1))]
     locs[t] = l2
-    rho[l2] += 1
+    ρ[l2] += 1
   end
-  (rho, locs)
+  (ρ, locs, ρSum)
 end
 
 function hot(len, ixs)
@@ -51,169 +66,178 @@ function hot(len, ixs)
   a 
 end
 
-function pickup(rho, locs, poissons)
+# this would be better with functional data structures
+# Look into this! Finger tree?
+
+function pickup((oldRho, oldLocs, rhoSum), poissons)
+  locs = copy(oldLocs)
+  rho = copy(oldRho)
   passengers = rand.(poissons)
   for taxi in randperm(length(locs))
     l = locs[taxi]
     if l > 0 && passengers[l] > 0
       passengers[l] -= 1
       rho[l] -= 1
+      rhoSum -= 1
       locs[taxi] = -1
     end
   end
-  (rho, locs)
+  (rho, locs, rhoSum)
 end
 
-# Tabular case
+
+# Samplers
 
 @resumable function easyStates()
   for i in 1:16
-    @yield hot(16, i)
+    oneHot = hot(16, i)
+    @yield (oneHot, rhoToLocs(oneHot), 1)
   end
   for i in 1:16
     for j in i:16
-      @yield hot(16, [i,j])
+      twoHot = hot(16, [i,j])
+      @yield (twoHot, rhoToLocs(twoHot), 2)
     end
   end 
 end
 
+"Randomly sample from a truncated normal"
+@with_kw struct SampledRho
+  nLocs::Int
+  nDist = Truncated(Normal(0, 20), 1, 50)
+end
 
-function mcTabular(net)
-  lamSampler = Poisson.(net.lam)
-  states = DefaultDict{Vector{Int}, Pair{Float64, Int}}(0.0=>1)
-  predict(ρ) = states[ρ][1]
-  for ρStart in easyStates()
-    for attempt in 1:500
-      ρ = copy(ρStart)
-      locs = rhoToLocs(ρ)
-      history = Vector{Tuple{Vector{Int}, Float64, Bool}}()
-      while true
-        seen = Set{Vector{Int}}()
-        ρSum = sum(ρ)
-        if ρSum == 0
-          cumSum = 0
-          for (k,v,b) in Itr.reverse(history)
-            cumSum += v
-            if !b
-              oldVal, oldN = states[k]
-              states[k] = (oldVal + (1.0 / oldN) * (cumSum - oldVal)) => (oldN + 1)
-            end
-          end
-          break
-        else
-          push!(history, (ρ, ρSum, ρ in seen))
-          push!(seen, ρ)
-        end
-        ρ, locs = pickup(ρ, locs, lamSampler)
-        ρ, locs = moveTaxis(ρ, locs, net, predict, 0.9)
-      end
-    end
-  end
-  predict
+Base.iterate(SampledRho, _) = Base.iterate(SampledRho)
+Base.eltype(::Type{SampledRho}) = RLState
+function Base.iterate(s::SampledRho)
+  n = floor(Int, rand(s.nDist))
+  locs = rand(1:s.nLocs, n)
+  ((locsToRho(locs, s.nLocs), locs, n), nothing)
 end
 
 
+# Training algorithms
 
-# what if we start it with the one taxi prediction?
-# and the default value is n times the one taxi prediction 
-# do we not need to separate prediction from improvement phase?
-function nStepTabular(net, n=6)
-  lr = 0.001
-  lamSampler = Poisson.(net.lam)
-  states = DefaultDict{Vector{Int}, Float64}(0.0)
-  oldStates = copy(states)
-  predict(ρ) = oldStates[ρ]
-  history = CircularBuffer{Pair{Vector{Int}, Float64}}(n - 1)
-  for (i,ρ) in Itr.take(enumerate(Itr.cycle(easyStates())), 500000)
-    tdSum = 0.0
-    tdN = 0
-    curSum = 0.0
-    while true
-      seen = Set{Vector{Int}}()
-      ρSum = sum(ρ)
-      if ρSum == 0
-        while !isempty(history)
-          st, t = popfirst!(history)
-          if !(st in seen)
-            push!(seen, st)
-            td = curSum - states[st] 
-            tdSum += abs(td)
-            tdN += 1
-            states[st] += lr * td
-          end
-          curSum -= t
-        end
-        break
-      end
-      if isfull(history)
-        st = history[1][1]
-        if !(st in seen)
-          push!(seen, st)
-          target = curSum + states[ρ]
-          td = target - states[st]
-          states[st] += lr * td
-          tdSum += abs(td)
-          tdN += 1
-        end
-      end
-      curSum += ρSum
-      if isfull(history) curSum -= history[1][2] end
-      push!(history, ρ=>ρSum)
-      ρ = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, predict)
-    end
-    if i % 2000 == 999 merge!(oldStates, states) end
-    if i % 3000 == 2999 lr *= 0.9 end
-    if i % 6000 == 0
-      @info "Average td error $(tdSum / tdN)"
-      tdSum = 0.0
-      tdN = 0
-    end
-  end
-  predict
+mutable struct NStep
+  history::CircularBuffer{Pair{Vector{Int}, Float64}}
+  seen::Set{Vector{Int}}
+  curSum::Int
+end
+NStep(n=6) = NStep(CircularBuffer{Pair{Vector{Int}, Float64}}(n-1), Set{Vector{Int}}(), 0)
+
+function reset!(alg::NStep)
+  alg.curSum = 0
+  empty!(alg.seen)
 end
 
-# In the simulation:
-# Every round, a turn order is established randomly. 
-# Then each taxi takes their turn moving
+function step!(alg::NStep, model, (ρ, locs, ρSum)::RLState, logger)::Bool
+  if ρSum == 0
+    while !isempty(alg.history)
+      ρ0, t = popfirst!(alg.history)
+      if !(ρ0 in alg.seen)
+        push!(alg.seen, ρ0)
+        backup!(model, ρ0, alg.curSum, logger)
+      end
+      alg.curSum -= t
+    end
+    return false
+  end
+  if isfull(alg.history)
+    ρ0 = alg.history[1][1]
+    if !(ρ0 in alg.seen)
+      push!(alg.seen, ρ0)
+      backup!(model, ρ0, alg.curSum + predict(model, ρSum, ρ), logger)
+    end
+  end
+  alg.curSum += ρSum
+  if isfull(alg.history) alg.curSum -= alg.history[1][2] end
+  push!(alg.history, ρ=>ρSum)
+  true
+end
 
 
+# Models
 
-function trainedModel(net; lr=0.0005, nSampler=Truncated(Normal(0, 20), 0, 50),
-  copyRate=100)
-  #vd = Visdom("loss", [:loss])
-  k = 1
-  nLocs = length(net.lam)
+abstract type Model end
+
+struct NN <: Model
+  q1
+  q2
+  opt!
+  copyRate::Int
+end
+Base.broadcastable(a::NN) = Base.RefValue(a)
+
+function NN(nLocs; lr=0.0005, copyRate=1000)
   model() = Chain(Dense(nLocs, 1), x->x[1])
   q1 = model()
-  q2 = model()
-  lamSampler = Poisson.(net.lam)
-  opt = ADAM(Flux.params(q1), lr)
-  history = CircularBuffer{Pair{Vector{Int}, Float64}}(n - 1)
-  runningLoss = 0.0
-   
-  try
-    for episode in Itr.countfrom()
-      if episode % copyRate == 0
-        Flux.loadparams!(q2, Flux.params(q1))
-      end
-      n = rand(nSampler)
-      ρ = locsToRho(rand(1:nLocs,n), nLocs)
-    
-    
-    
-    ρEnd = moveTaxis(max.(0, ρ .- rand.(lamSampler)), net, q2)
-    ρSum = sum(ρ)
-    timeEst = (ρSum == 0) ? 0.0 : ρSum + Flux.data(q2(ρEnd))
-    loss = Flux.mse(q1(ρ), timeEst)
-    Flux.back!(loss)
-    opt()
-    runningLoss += Flux.data(loss)
-    if i % 1000 == 999
-      println("Running loss ", runningLoss / 1000.0)
-      runningLoss = 0.0
-      #VisdomLog.inform(vd, :loss, runningLoss / 100.0)
-    end
-  end
-  q1
+  NN(q1, model(), ADAM(Flux.params(q1), lr), copyRate)
 end
+
+startEpisode!(model::NN, episode) = 
+  if episode % model.copyRate == 0
+    Flux.loadparams!(model.q2, Flux.params(model.q1))
+  end
+
+predict(model::NN, ρSum, ρ)= ρSum == 0 ? 0.0 : Flux.data(model.q2(ρ))
+
+function backup!(model::NN, ρ, target, logger)
+  loss = abs(model.q1(ρ) - target)
+  Flux.back!(loss)
+  inform!(logger, :gradW, model.q1.layers[1].W.grad)
+  model.opt!()
+  report!(logger, :loss, Flux.data(loss))
+end
+
+
+# Loggers
+
+abstract type LogView end
+
+@with_kw struct Logger
+  freq::Int=1000
+  reports::Dict{Symbol, Pair{Float64,Int}}=Dict{Symbol,Pair{Float64,Int}}()
+  info::Dict{Symbol, Array{Float64}}=Dict{Symbol,Array{Float64}}()
+  view::Vector{LogView} = [TxtLog()]
+end
+ 
+showLog(l, episode) = if episode % l.freq == (l.freq - 1)
+  for (k,(v,_)) in l.reports
+    for lv in l.view showReport(lv, k, v) end
+  end
+  for (k, v) in l.info
+    for lv in l.view showInfo(lv, k, v) end
+  end
+  empty!(l.reports)
+  empty!(l.info)
+end
+
+function inform!(l::Logger, k, v)
+  if all(v .== 0.0)
+    println("FUCK")
+  end
+  l.info[k] = v
+end
+
+function report!(l::Logger, s::Symbol, data)
+  if haskey(l.reports, s)
+    v, n = l.reports[s] 
+    l.reports[s] = (v + ((Float64(data) - v) / n))=>( n + 1);
+  else
+    l.reports[s] = Float64(data)=>1;
+  end
+end
+
+struct TxtLog <: LogView end
+showReport(::TxtLog, k, v) = println("$k: $v");
+showInfo(::TxtLog, k, v) = println("$k: $v")
+
+struct VdLog <: LogView 
+  vd::Visdom
+end
+VdLog(env::String) = VdLog(Visdom(env))
+
+showReport(vd::VdLog, k, v) = VisdomLog.report(vd.vd, k, v);
+showInfo(vd::VdLog, k, v) = VisdomLog.inform(vd.vd, k, v);
+
 

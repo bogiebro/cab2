@@ -4,7 +4,7 @@ import LightGraphs; const LG = LightGraphs
 import Laplacians; const Lap = Laplacians
 import FunctionWrappers; const Fn = FunctionWrappers.FunctionWrapper
 import PyCall
-using Reel, GraphPlot
+using Reel, GraphPlot, Parameters
 const Itr = Iterators
 const T = Tuple
 
