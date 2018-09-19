@@ -180,7 +180,7 @@ finalize(s::Vis) = s.frames
 
 # Utility functions
 
-function rhoToLocs(rho)
+function rhoToLocs(rho::Array{Int})
   locs = zeros(Int, sum(rho))
   n = 1
   for (i,r) in enumerate(rho)
@@ -192,13 +192,21 @@ function rhoToLocs(rho)
   locs
 end
 
-# Make this full transition
-function locsToRho(locs, nLocs)
-  rho = zeros(Int, nLocs)
-  for l in locs
-    if l > 0 rho[l] += 1 end
+function rhoToLocs(rho::SparseVector{Int,Int})
+  locs = zeros(Int, sum(rho))
+  n = 1
+  for (i,r) in zip(rho.nzind, rho.nzval)
+    for _ in 1:r
+      locs[n] = i
+      n+=1
+    end
   end
-  rho
+  locs
+end
+
+function locsToRho(locs, nLocs)
+  nzlocs = locs[locs .> 0]
+  sparsevec(nzlocs, ones(length(nzlocs)), nLocs)
 end
 
 function sampleDest(M, dists, ix)
@@ -218,7 +226,8 @@ end
 
 # Simulation functions
 
-function competP(locs::Vector{Int}, net::RoadNet, mkStats, pn, limit::Int=1000)
+function competP(locs::Vector{Int}, net::RoadNet, mkStats, pn,
+    limit::Int=1000)
   poissons = Poisson.(net.lam)
   nLocs = length(net.lam)
   nTaxis = length(locs)

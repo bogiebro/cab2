@@ -1,11 +1,15 @@
-using ResumableFunctions, DataStructures, Flux, Flux.Tracker, VisdomLog
+using DataStructures, Flux, VisdomLog
 export trainModel, easyStates, SampledRho, NStep, VdLog, TxtLog, Logger
 
 # Training utilities
 
 struct StopTraining <: Exception end
 
-const RLState = Tuple{Vector{Int}, Vector{Int}, Int} # rho, locs, rhoSum
+mutable struct RLState
+  ρ::SparseVector{Int,Int}
+  locs::Vector{Int}
+  ρSum::Int
+end
 
 function trainModel(net; eps=0.9, nLocs=length(net.lam), logger=Logger(),
     sampler=SampledRho(nLocs=nLocs), model=NN(nLocs), alg=NStep())
@@ -16,7 +20,7 @@ function trainModel(net; eps=0.9, nLocs=length(net.lam), logger=Logger(),
       showLog(logger, episode)
       reward = 0
       while step!(alg, model, rlState, logger)
-        reward += rlState[3]
+        reward += rlState.ρSum
         rlState = pickup(rlState, lamSampler)
         rlState = moveTaxis(rlState, net, model, eps)
       end
@@ -33,7 +37,7 @@ end
 
 function addTaxi(a, i)
   a2 = copy(a)
-  a2[i] += 1
+  a[i] += 1
   a2
 end
 
@@ -43,51 +47,40 @@ function greedyAction(net, ρ, ρSum, model, l)
   net.g.rowval[inds[best]]
 end
 
-function moveTaxis((oldρ, oldLocs, ρSum), net, model, eps)
-  ρ = copy(oldρ)
-  locs = copy(oldLocs)
-  for t in 1:length(locs)
-    l = locs[t]
+function moveTaxis(st, net, model, eps)
+  st2 = deepcopy(st)
+  for (t,l) in enumerate(st2.locs)
     if l <= 0 continue end
-    ρ[l] -= 1
-    l2 = rand() >= eps ? greedyAction(net, ρ, ρSum, model, l) :
+    st2.ρ[l] -= 1
+    l2 = rand() >= eps ? greedyAction(net, st2.ρ, st2.ρSum, model, l) :
       net.g.rowval[rand(net.g.colptr[l]:(net.g.colptr[l+1]-1))]
-    locs[t] = l2
-    ρ[l2] += 1
+    st2.locs[t] = l2
+    st2.ρ[l2] += 1
   end
-  (ρ, locs, ρSum)
+  st2
 end
 
-function hot(len, ixs)
-  a = zeros(Int, len)
-  for i in ixs
-    a[i] += 1
-  end
-  a 
-end
+hot(len, ixs) = sparsevec(ixs, ones(length(ixs)))
 
-# this would be better with functional data structures
-# Look into this! Finger tree?
-
-function pickup((oldRho, oldLocs, rhoSum), poissons)
-  locs = copy(oldLocs)
-  rho = copy(oldRho)
+function pickup(st, poissons)
+  st2 = deepcopy(st)
   passengers = rand.(poissons)
-  for taxi in randperm(length(locs))
-    l = locs[taxi]
+  for taxi in randperm(length(st2.locs))
+    l = st2.locs[taxi]
     if l > 0 && passengers[l] > 0
       passengers[l] -= 1
-      rho[l] -= 1
-      rhoSum -= 1
-      locs[taxi] = -1
+      st2.ρ[l] -= 1
+      st2.ρSum -= 1
+      st2.locs[taxi] = -1
     end
   end
-  (rho, locs, rhoSum)
+  st2
 end
 
 
 # Samplers
 
+#=
 @resumable function easyStates()
   for i in 1:16
     oneHot = hot(16, i)
@@ -100,11 +93,12 @@ end
     end
   end 
 end
+=#
 
 "Randomly sample from a truncated normal"
 @with_kw struct SampledRho
   nLocs::Int
-  nDist = Truncated(Normal(0, 20), 1, 50)
+  nDist = Truncated(Normal(0, 10), 1, 25)
 end
 
 Base.iterate(SampledRho, _) = Base.iterate(SampledRho)
@@ -112,26 +106,27 @@ Base.eltype(::Type{SampledRho}) = RLState
 function Base.iterate(s::SampledRho)
   n = floor(Int, rand(s.nDist))
   locs = rand(1:s.nLocs, n)
-  ((locsToRho(locs, s.nLocs), locs, n), nothing)
+  (RLState(locsToRho(locs, s.nLocs), locs, n), nothing)
 end
 
 
 # Training algorithms
 
 mutable struct NStep
-  history::CircularBuffer{Pair{Vector{Int}, Float64}}
-  seen::Set{Vector{Int}}
+  history::CircularBuffer{Pair{SparseVector{Int,Int}, Float64}}
+  seen::Set{SparseVector{Int,Int}}
   curSum::Int
 end
-NStep(n=6) = NStep(CircularBuffer{Pair{Vector{Int}, Float64}}(n-1), Set{Vector{Int}}(), 0)
+NStep(n=10) = NStep(CircularBuffer{Pair{SparseVector{Int,Int}, Float64}}(n-1),
+   Set{Vector{Int}}(), 0)
 
 function reset!(alg::NStep)
   alg.curSum = 0
   empty!(alg.seen)
 end
 
-function step!(alg::NStep, model, (ρ, locs, ρSum)::RLState, logger)::Bool
-  if ρSum == 0
+function step!(alg::NStep, model, st::RLState, logger)::Bool
+  if st.ρSum == 0
     while !isempty(alg.history)
       ρ0, t = popfirst!(alg.history)
       if !(ρ0 in alg.seen)
@@ -146,12 +141,12 @@ function step!(alg::NStep, model, (ρ, locs, ρSum)::RLState, logger)::Bool
     ρ0 = alg.history[1][1]
     if !(ρ0 in alg.seen)
       push!(alg.seen, ρ0)
-      backup!(model, ρ0, alg.curSum + predict(model, ρSum, ρ), logger)
+      backup!(model, ρ0, alg.curSum + predict(model, st.ρSum, st.ρ), logger)
     end
   end
-  alg.curSum += ρSum
+  alg.curSum += st.ρSum
   if isfull(alg.history) alg.curSum -= alg.history[1][2] end
-  push!(alg.history, ρ=>ρSum)
+  push!(alg.history, st.ρ=>st.ρSum)
   true
 end
 
@@ -185,8 +180,8 @@ function backup!(model::NN, ρ, target, logger)
   loss = abs(model.q1(ρ) - target)
   Flux.back!(loss)
   inform!(logger, :gradW, model.q1.layers[1].W.grad)
-  model.opt!()
   report!(logger, :loss, Flux.data(loss))
+  model.opt!()
 end
 
 
@@ -212,12 +207,7 @@ showLog(l, episode) = if episode % l.freq == (l.freq - 1)
   empty!(l.info)
 end
 
-function inform!(l::Logger, k, v)
-  if all(v .== 0.0)
-    println("FUCK")
-  end
-  l.info[k] = v
-end
+inform!(l::Logger, k, v) = l.info[k] = copy(v)
 
 function report!(l::Logger, s::Symbol, data)
   if haskey(l.reports, s)
@@ -230,7 +220,7 @@ end
 
 struct TxtLog <: LogView end
 showReport(::TxtLog, k, v) = println("$k: $v");
-showInfo(::TxtLog, k, v) = println("$k: $v")
+showInfo(::TxtLog, k, v) = nothing
 
 struct VdLog <: LogView 
   vd::Visdom

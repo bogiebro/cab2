@@ -244,6 +244,12 @@ git-tree-sha1 = "49bf793ebd37db5adaa7ac1eae96c2c97ec86db5"
 uuid = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
 version = "1.0.0"
 
+[[FunctionalCollections]]
+deps = ["Test"]
+git-tree-sha1 = "9fdecc849480c511d7825570c20c9b64c4e5d5ed"
+uuid = "de31a74c-ac4f-5751-b3fd-e18cd04993ca"
+version = "0.4.0"
+
 [[Glob]]
 deps = ["Compat", "Pkg", "Test"]
 git-tree-sha1 = "c72f1fcb7d17426de1e8af2e948dfb3de1116eed"
