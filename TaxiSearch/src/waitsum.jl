@@ -16,15 +16,12 @@ function trainModel(net; eps=0.9, nLocs=length(net.lam), logger=Logger(),
   lamSampler = Poisson.(net.lam)
   try
     for (episode, rlState::RLState) in enumerate(sampler)
-      startEpisode!(model, episode)
+      startEpisode!(model, episode, logger)
       showLog(logger, episode)
-      reward = 0
       while step!(alg, model, rlState, logger)
-        reward += rlState.ρSum
         rlState = pickup(rlState, lamSampler)
         rlState = moveTaxis(rlState, net, model, eps)
       end
-      report!(logger, :reward, reward)
       reset!(alg)
     end
   catch e
@@ -43,7 +40,7 @@ end
 
 function greedyAction(net, ρ, ρSum, model, l)
   inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
-  best = argmin(predict.(model, ρSum, addTaxi(ρ, net.g.rowval[i]) for i in inds))
+  best = argmin(predictB.(model, addTaxi(ρ, net.g.rowval[i]) for i in inds))
   net.g.rowval[inds[best]]
 end
 
@@ -141,7 +138,7 @@ function step!(alg::NStep, model, st::RLState, logger)::Bool
     ρ0 = alg.history[1][1]
     if !(ρ0 in alg.seen)
       push!(alg.seen, ρ0)
-      backup!(model, ρ0, alg.curSum + predict(model, st.ρSum, st.ρ), logger)
+      backup!(model, ρ0, alg.curSum + predictT(model, st.ρ), logger)
     end
   end
   alg.curSum += st.ρSum
@@ -155,31 +152,46 @@ end
 
 abstract type Model end
 
+clipgrad!(nn,::Nothing) = nothing
+function clipgrad!(nn, rng::Tuple{Float64,Float64})
+  for p in Flux.params(nn)
+    p.grad[p.grad .< rng[1]] .= rng[1]
+    p.grad[p.grad .> rng[2]] .= rng[2];
+  end
+end
+  
 struct NN <: Model
   q1
   q2
   opt!
   copyRate::Int
+  rng::Union{Nothing,Tuple{Float64,Float64}}
 end
 Base.broadcastable(a::NN) = Base.RefValue(a)
 
-function NN(nLocs; lr=0.0005, copyRate=1000)
-  model() = Chain(Dense(nLocs, 1), x->x[1])
+function NN(nLocs; lr=0.0005, copyRate=2000, rng=(-40,40))
+  model() = Chain(Dense(nLocs, 50, leakyrelu), Dense(50, 1), x->x[1])
   q1 = model()
-  NN(q1, model(), ADAM(Flux.params(q1), lr), copyRate)
+  NN(q1, model(), ADAM(Flux.params(q1), lr), copyRate, rng)
 end
 
-startEpisode!(model::NN, episode) = 
+function startEpisode!(model::NN, episode, logger)
+  inform!(logger, :W1, Flux.data(model.q1.layers[1].W))
+  inform!(logger, :W2, Flux.data(model.q1.layers[2].W))
   if episode % model.copyRate == 0
     Flux.loadparams!(model.q2, Flux.params(model.q1))
   end
+end
 
-predict(model::NN, ρSum, ρ)= ρSum == 0 ? 0.0 : Flux.data(model.q2(ρ))
+predictB(model::NN, ρ)= Flux.data(model.q2(ρ))
+predictT(model::NN, ρ)= Flux.data(model.q1(ρ))
 
 function backup!(model::NN, ρ, target, logger)
-  loss = abs(model.q1(ρ) - target)
+  loss = 0.1 * (model.q1(ρ) - target).^2
   Flux.back!(loss)
-  inform!(logger, :gradW, model.q1.layers[1].W.grad)
+  inform!(logger, :gradW1, model.q1.layers[1].W.grad)
+  inform!(logger, :gradW2, model.q1.layers[2].W.grad)
+  clipgrad!(model.q1, model.rng)
   report!(logger, :loss, Flux.data(loss))
   model.opt!()
 end
@@ -190,7 +202,7 @@ end
 abstract type LogView end
 
 @with_kw struct Logger
-  freq::Int=1000
+  freq::Int=200
   reports::Dict{Symbol, Pair{Float64,Int}}=Dict{Symbol,Pair{Float64,Int}}()
   info::Dict{Symbol, Array{Float64}}=Dict{Symbol,Array{Float64}}()
   view::Vector{LogView} = [TxtLog()]
@@ -207,7 +219,7 @@ showLog(l, episode) = if episode % l.freq == (l.freq - 1)
   empty!(l.info)
 end
 
-inform!(l::Logger, k, v) = l.info[k] = copy(v)
+inform!(l::Logger, k, v) = (l.info[k] = copy(v))
 
 function report!(l::Logger, s::Symbol, data)
   if haskey(l.reports, s)
