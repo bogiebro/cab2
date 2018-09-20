@@ -4,7 +4,7 @@ import LightGraphs; const LG = LightGraphs
 import Laplacians; const Lap = Laplacians
 import FunctionWrappers; const Fn = FunctionWrappers.FunctionWrapper
 import PyCall
-using Reel, GraphPlot, Parameters
+using GraphPlot, Parameters
 const Itr = Iterators
 const T = Tuple
 
@@ -215,6 +215,16 @@ plotG(g::LG.DiGraph, net::RoadNet, sizes::Vector{Float64}=net.lam; kwargs...) =
   gplot(g, net.xs, net.ys; arrowlengthfrac=0.06, nodesize=sizes, kwargs...)
 plotG(g::LG.Graph, net::RoadNet, sizes::Vector{Float64}=net.lam; kwargs...) =
   gplot(g, net.xs, net.ys; nodesize=sizes, kwargs...)
+  
+
+# Dynammic programming solutions
+  
+function a1Min(A, lam)
+  vals = fixedPoint(x->lam .+ (1 .- lam) .* (1 .+ neighborMin(A, x)[1]), 1 ./ lam)
+  ptrs = neighborMin(A, vals)[2]
+  pol = ptrPolicy(ptrs)
+  (pol, vals, ptrs)
+end
 
 include("simulation.jl")
 include("waitsum.jl")
