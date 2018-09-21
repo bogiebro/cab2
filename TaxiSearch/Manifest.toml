@@ -99,7 +99,9 @@ version = "1.1.0"
 
 [[Compose]]
 deps = ["Base64", "Colors", "DataStructures", "Dates", "IterTools", "JSON", "Measures", "Printf", "Random", "Requires", "Test", "UUIDs"]
-path = "/home/sam/.julia/dev/Compose"
+git-tree-sha1 = "9725bf268247ccedb516dc8c034374d269c4b7b2"
+repo-rev = "master"
+repo-url = "https://github.com/GiovineItalia/Compose.jl.git"
 uuid = "a81c6b42-2e10-5240-aca2-a61377ecd94b"
 version = "0.6.1+"
 
@@ -175,10 +177,10 @@ uuid = "069b7b12-0de2-55c6-9aab-29f3d0a68a2e"
 version = "1.0.0"
 
 [[GraphPlot]]
-deps = ["ColorTypes", "Colors", "Compose", "DelimitedFiles", "LightGraphs", "SparseArrays"]
-path = "/home/sam/.julia/dev/GraphPlot"
+deps = ["ColorTypes", "Colors", "Compose", "LightGraphs"]
+git-tree-sha1 = "191a45194460c9baa69d352402934eb70859a245"
 uuid = "a2cc645c-3eea-5389-862e-a155d0052231"
-version = "0.2.1+"
+version = "0.2.1"
 
 [[HDF5]]
 deps = ["BinDeps", "Blosc", "Distributed", "Homebrew", "Libdl", "LinearAlgebra", "Mmap", "Pkg", "Test", "WinRPM"]
@@ -270,10 +272,12 @@ uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
 
 [[MAT]]
-deps = ["BufferedStreams", "Compat", "HDF5", "Libz"]
-git-tree-sha1 = "2867125226f7815ccebca4cd67c719af2f07fb13"
+deps = ["BufferedStreams", "Compat", "HDF5", "Libz", "SparseArrays"]
+git-tree-sha1 = "c8cb2230a55e7f4fa4388d028e84584a320139d2"
+repo-rev = "fixes"
+repo-url = "https://github.com/bogiebro/MAT.jl.git"
 uuid = "23992714-dd62-5051-b70f-ba57cb901cac"
-version = "0.4.0"
+version = "0.4.0+"
 
 [[MacroTools]]
 deps = ["Compat"]
@@ -502,7 +506,9 @@ version = "1.1.2"
 
 [[VisdomLog]]
 deps = ["PyCall"]
-path = "/home/sam/VisdomLog"
+git-tree-sha1 = "3be547ae806c4f785362909b847891fa3a31e865"
+repo-rev = "master"
+repo-url = "https://github.com/bogiebro/VisdomLog.git"
 uuid = "b9b00f16-b148-11e8-1d80-65f62d8fa156"
 version = "0.1.0"
 
