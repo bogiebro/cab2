@@ -100,12 +100,6 @@ greedyPol(net) = greedyPol(net, net.lam)
 greedyPol(net, score) = ptrPolicy(neighborMin(net.g, 1.0 ./ score)[2])
 greedyPolProp(net) = scorePolicy(net.lam, net.g)
 
-# We actually need to know what others are doing
-greedyF(net) = x::Vector{Int}-> scorePolicy(net.lam ./ (x .+ 1), net.g)
-greedyBF(net) = x::Vector{Int}-> ptrPolicy(neighborMin(net.g,
-  collect(zip(net.lam, 1.0 / Float64.(x .+ 1))))[2])
-
-
 "Keeps only the cycles of a graph"
 justCycles(g::Graph) = justCycles(LG.DiGraph(g'))
 function justCycles(g::LG.AbstractGraph)
