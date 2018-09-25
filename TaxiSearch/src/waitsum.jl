@@ -6,10 +6,6 @@ export trainModel, NStep, VdLog, TxtLog, Logger, nn, nnStab, competTest,
   pretrain, scaleTest, mixedTest
 pygui(false)
 
-# we're doing redundant prediction
-# greedyAction already knows the value
-# as does each step of the n-step return
-
 # Validating performance of trained models
 
 #function competTest(trained, net, episode, logView)
@@ -25,7 +21,7 @@ pygui(false)
 
 function competTest(trained, net, episode, logView)
   nTaxis = ceil(Int, 0.2 * length(net.lam))
-  trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
+  trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)[1]
   fig = plt[:figure]()
   bench(withNTaxis(nTaxis, competP), net,
     S([], [maxCars]),
@@ -81,8 +77,9 @@ mutable struct RLState
   ρSum::Int
 end
 
-function trainLoop(f, model, opt!, sampler, trDescr, logger,
+function trainLoop(gf, model, opt!, sampler, trDescr, logger,
     trainRate; saveFreq=204800, tests=[])
+  f = Fn{Nothing, T{Int,RLState}}(gf)
   mkpath("checkpoints")
   bestLoss = Inf
   try
@@ -113,14 +110,15 @@ function resumeTraining(net, model, opt!, trDescr; trainRate=1,
   sampler = Sampler(length(net.lam), nDist)
   trDescr = joinDescr(trDescr, log, sampler, model, alg)
   addView!(log, VdLog(trDescr))
-  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, rlState::RLState
+  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
     waitTime = 0.0
     nTaxis = rlState.ρSum
     startEpisode!(model, episode, log)
-    while step!(alg, model, rlState, log, invTrainRate)
+    valEst = model(rlState.ρ)
+    while step!(alg, model, rlState, valEst, log, invTrainRate)
       waitTime += rlState.ρSum
       rlState = pickup(rlState, lamSampler)
-      rlState = moveTaxis(rlState, net, model)
+      rlState, valEst = moveTaxis(rlState, net, model)
     end
     report!(log, :waitTime, waitTime / nTaxis)
     reset!(alg)
@@ -145,7 +143,7 @@ function pretrain(net; log=Logger(), lr=0.001, decay=0, trainRate=800, limit=80.
   trDescr = joinDescr("lr $lr", log, "pretrain", model)
   addView!(log, VdLog(trDescr))
   trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, s::RLState
-    backup!(model, s.ρ, trueVals[s.ρ.nzind[1]], log, invTrainRate)
+    backup!(model, s.ρ, model(s.ρ), trueVals[s.ρ.nzind[1]], log, invTrainRate)
   end
 end
 
@@ -160,20 +158,22 @@ end
 
 function greedyAction(net, ρ, model, l)
   inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
-  best = argmin(predictB.(model, addTaxi(ρ, net.g.rowval[i]) for i in inds))
-  net.g.rowval[inds[best]]
+  valEsts = model.(addTaxi(ρ, net.g.rowval[i]) for i in inds)
+  best = argmin(valEsts)
+  (net.g.rowval[inds[best]], valEsts[best])
 end
 
-function moveTaxis(st, net, model)
+function moveTaxis(st, net, model)::Tuple{RLState, TrackedReal{Float64}}
   st2 = deepcopy(st)
+  l2Val = 0.0
   for (t,l) in enumerate(st2.locs)
     if l <= 0 continue end
     st2.ρ[l] -= 1
-    l2 = greedyAction(net, st2.ρ, model, l)
+    l2, l2Val = greedyAction(net, st2.ρ, model, l)
     st2.locs[t] = l2
     st2.ρ[l2] += 1
   end
-  st2
+  (st2, l2Val)
 end
 
 function pickup(st, poissons)
@@ -222,12 +222,12 @@ end
 abstract type Alg end
 
 mutable struct NStep <: Alg
-  history::CircularBuffer{Pair{SparseVector{Int,Int}, Float64}}
+  history::CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal{Float64}}}
   seen::Set{SparseVector{Int,Int}}
-  curSum::Int
+  curSum::Int # sum of waiting times over all in history
 end
-NStep(n=4) = NStep(CircularBuffer{Pair{SparseVector{Int,Int}, Float64}}(n),
-   Set{Vector{Int}}(), 0)
+NStep(n=4) = NStep(CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal{Float64}}}(n),
+   Set{SparseVector{Int,Int}}(), 0)
 descr(ns::NStep) = "TD$(ns.history.capacity)"
 
 function reset!(alg::NStep)
@@ -235,28 +235,29 @@ function reset!(alg::NStep)
   empty!(alg.seen)
 end
 
-function step!(alg::NStep, model, st, logger, invTrainRate)::Bool
+function step!(alg::NStep, model, st::RLState, valEst::TrackedReal{Float64}, logger, invTrainRate)::Bool
   if st.ρSum == 0
     while !isempty(alg.history)
-      ρ0, t = popfirst!(alg.history)
+      ρ0, t, est = popfirst!(alg.history)
       if !(ρ0 in alg.seen)
         push!(alg.seen, ρ0)
-        backup!(model, ρ0, alg.curSum, logger, invTrainRate)
+        backup!(model, ρ0, est, alg.curSum, logger, invTrainRate)
       end
       alg.curSum -= t
     end
+    backup!(model, st.ρ, valEst, 0, logger, invTrainRate)
     return false
   end
   if isfull(alg.history)
-    ρ0 = alg.history[1][1]
+    ρ0, t, est = alg.history[1]
     if !(ρ0 in alg.seen)
       push!(alg.seen, ρ0)
-      backup!(model, ρ0, alg.curSum + predictT(model, st.ρ), logger, invTrainRate)
+      backup!(model, ρ0, est, alg.curSum + predictT(model, st.ρ), logger, invTrainRate)
     end
+    alg.curSum -= t
   end
   alg.curSum += st.ρSum
-  if isfull(alg.history) alg.curSum -= alg.history[1][2] end
-  push!(alg.history, st.ρ=>st.ρSum)
+  push!(alg.history, (st.ρ, st.ρSum, valEst))
   true
 end
 
@@ -294,9 +295,9 @@ abstract type Model end
 Base.broadcastable(a::Model) = Base.RefValue(a)
 startEpisode!(model::Model, episode, logger) = nothing
 
-function backup!(model::Model, ρ::SparseVector{Int,Int}, target, logger, invRate::Float64)
-  prediction = model(ρ)::TrackedReal{Float64}
-  loss = 0.5 * (prediction - target).^2
+function backup!(model, ρ::SparseVector{Int,Int}, predicted::TrackedReal{Float64},
+    target, logger, invRate::Float64)
+  loss = 0.5 * (predicted - target).^2
   Flux.back!(loss, invRate)
   report!(logger, :grad, vcat(map(x->grad(x)[:], model.params)...))
   report!(logger, :loss, Flux.data(loss))
@@ -316,7 +317,6 @@ end
 
 fromSingle(net::RoadNet) = NN(Linear(a1Min(net.g, net.lam)[2]))
 
-predictB(model::NN, ρ)= Flux.data(model(ρ))
 predictT(model::NN, ρ)= Flux.data(model(ρ))
 
 struct NNStab{R,M,P} <: Model
@@ -345,7 +345,6 @@ function startEpisode!(model::NNStab{Float64}, episode, logger)
   updateTarget!(model.q1params, model.params, model.copyRate)
 end
 
-predictB(model::NNStab, ρ)= Flux.data(model.q1(ρ))
 predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ))
 
 
