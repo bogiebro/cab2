@@ -1,39 +1,70 @@
 using DataStructures, Flux, VisdomLog
 using Flux.Optimise: optimiser, adam, invdecay, descent, clip
-using Flux.Tracker: grad
+using Flux.Tracker: grad, TrackedReal
 using BSON: @save, @load
-export trainModel, NStep, VdLog, TxtLog, Logger, nn
+export trainModel, NStep, VdLog, TxtLog, Logger, nn, nnStab, competTest,
+  pretrain, scaleTest, mixedTest
+pygui(false)
 
-# last params: trainrate 800, copyrate 3200, nstep 5
-# logFreq 800, 
-
-# Specialized network layers
-
-neighborhoods(g::Graph, n::Int)::Graph = (g + speye(g))^n .> 0
-function localized(g, n, activation=identity)
-  mask = neighborhoods(g, 4)
-  Dense(param(SparseMatrixCSC(mask.m, mask.n, mask.colptr, mask.rowval,
-    glorot_uniform(length(mask.nzval)))), param(zeros(mask.m)), activation)
-end
-descr(::Dense{F,TrackedArray{Float64,2,Graph},T}) where {F,T} = "s"
-
-struct Linear
-  W
-end
-Linear(n::Integer) = Linear(param(randn(n)))
-(m::Linear)(x) = dot(m.W, x)
-Flux.@treelike Linear
-descr(::Linear) = "l"
-
+# we're doing redundant prediction
+# greedyAction already knows the value
+# as does each step of the n-step return
 
 # Validating performance of trained models
 
+#function competTest(trained, net, episode, logView)
+  #nTaxis = ceil(Int, 0.2 * length(net.lam))
+  #trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
+  #fig = plt[:figure]()
+  #bench(withNTaxis(nTaxis, competP), net,
+    #S([taxiEmptyFrac, nodeWaitTimes], []),
+    #P([:hist, :scatter],[]), F([id, mean],[]), 1;
+    #rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
+  #showReport(logView, Symbol("comparison $episode"), fig)
+#end
+
 function competTest(trained, net, episode, logView)
-  trainedPol(rho) = ptrPolicy(neighborMin(net.g, trained(rho))[2])
+  nTaxis = ceil(Int, 0.2 * length(net.lam))
+  trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
   fig = plt[:figure]()
-  bench(withTaxiDensity(0.5, competP), net, S([taxiEmptyFrac], []), P([:hist],[]), F([id],[]), 10;
-    rand=randPol(net), greedy=greedyPol(net), trained=trainedPol)
-  showFig(logView, episode, fig)
+  bench(withNTaxis(nTaxis, competP), net,
+    S([], [maxCars]),
+    P([],[:line]), F([],[id]), 1;
+    rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
+  showReport(logView, Symbol("comparison $episode"), fig)
+end
+
+function nTaxiList(net)
+  minTaxis = 2
+  maxTaxis = length(net.lam)
+  incr = max(2, (maxTaxis - minTaxis) / 100)
+  minTaxis:incr:maxTaxis
+end
+
+function polGap(p, net, n)
+  p1, p2 = withNTaxis(n, competP)(net, S([taxiEmptyFrac], []), p).pol
+  mean(p1[1][2]) / mean(p2[1][2])
+end
+
+function mixedTest(trained, net, episode, logView)
+  smarty = solo(trained, randPol(net));
+  xs = nTaxiList(net)
+  res = [polGap(smarty, net, n) for n in xs]
+  showReport(logView, Symbol("mixed scaling $episode"), (xs, res))
+end
+
+meanEmptyFrac(n, net, p) = mean(withNTaxis(n, competP)(net, S([taxiEmptyFrac],[]), p).pol[1][1][2])
+
+function scaleTest(net)
+  legend = ["rand", "greedy", "trained"]
+  xs = nTaxiList(net)
+  randRes = [meanEmptyFrac(i, net, randPol(net)) for i in xs]
+  greedyRes = [meanEmptyFrac(i, net, greedyPol(net)) for i in xs]
+  (trained, episode, logView)-> begin
+    trainedRes = [meanEmptyFrac(i, net, testA1Min) for i in xs]
+    ys = [randRes' greedyRes' trainedRes']
+    showReport(logView, Symbol("scaling $episode"), (xs, ys, legend));
+  end
 end
 
 
@@ -51,7 +82,8 @@ mutable struct RLState
 end
 
 function trainLoop(f, model, opt!, sampler, trDescr, logger,
-    trainRate; saveFreq=102400, tests=[])
+    trainRate; saveFreq=204800, tests=[])
+  mkpath("checkpoints")
   bestLoss = Inf
   try
     for (episode, rlState::RLState) in enumerate(sampler)
@@ -61,15 +93,15 @@ function trainLoop(f, model, opt!, sampler, trDescr, logger,
         avgLoss = logger.reports[:loss][1]
         if avgLoss <= bestLoss 
           bestLoss = avgLoss
-          @save "$trDescr $trainRate $episode" model opt!
+          @save "checkpoints/$trDescr $trainRate $episode" model opt!
           for t in tests t(model, net, episode, logger.view) end
         end
       end
       showLog(logger, episode)
     end
   catch e
-    @save "$trDescr err" model opt!
-    if isa(e, InterruptException) return (model, opt!) end
+    @save "checkpoints/$trDescr err" model opt!
+    if isa(e, InterruptException) return (model, opt!, logger) end
     rethrow()
   end
 end
@@ -81,7 +113,7 @@ function resumeTraining(net, model, opt!, trDescr; trainRate=1,
   sampler = Sampler(length(net.lam), nDist)
   trDescr = joinDescr(trDescr, log, sampler, model, alg)
   addView!(log, VdLog(trDescr))
-  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
+  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, rlState::RLState
     waitTime = 0.0
     nTaxis = rlState.ρSum
     startEpisode!(model, episode, log)
@@ -95,24 +127,24 @@ function resumeTraining(net, model, opt!, trDescr; trainRate=1,
   end
 end  
  
-function trainModel(net; modelFn=nnStab(), lr=0.0005, limit=40.0, decay=0.1, args...)
-  model = modelFn(net)
-  opt! = optimiser(model.params, p->adam(p; η=lr), p->descent(p,1))
-  # p->invdecay(p, decay), p->clip(p, limit))
+function trainModel(net; modelF=nnStab(), lr=0.0005, limit=80.0, decay=0, args...)
+  model = modelF(net)
+  opt! = optimiser(model.params, p->adam(p; η=lr),
+    p->invdecay(p, decay), p->descent(p,1), p->clip(p, limit))
   resumeTraining(net, model, opt!, "lr $lr"; args...)
 end
 
-function pretrain(net; log=Logger(), lr=0.001, clip=10, decay=0.1, trainRate=800,
+function pretrain(net; log=Logger(), lr=0.001, decay=0, trainRate=800, limit=80.0,
     args...)
   model = modelFn(net)
   opt! = optimiser(model.params, p->adam(p; η=lr), p->invdecay(p, decay),
-    p->descent(p,1), p->clip(p, clip))
+    p->descent(p,1), p->clip(p, limit))
   invTrainRate = 1.0 / trainRate
   sampler = Sampler(length(net.lam), SingleAgent)
   trueVals = a1Min(net.g, net.lam)[2]
   trDescr = joinDescr("lr $lr", log, "pretrain", model)
   addView!(log, VdLog(trDescr))
-  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do (episode, s)
+  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, s::RLState
     backup!(model, s.ρ, trueVals[s.ρ.nzind[1]], log, invTrainRate)
   end
 end
@@ -126,7 +158,7 @@ function addTaxi(a, i)
   a2
 end
 
-function greedyAction(net, ρ, ρSum, model, l)
+function greedyAction(net, ρ, model, l)
   inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
   best = argmin(predictB.(model, addTaxi(ρ, net.g.rowval[i]) for i in inds))
   net.g.rowval[inds[best]]
@@ -137,7 +169,7 @@ function moveTaxis(st, net, model)
   for (t,l) in enumerate(st2.locs)
     if l <= 0 continue end
     st2.ρ[l] -= 1
-    l2 = greedyAction(net, st2.ρ, st2.ρSum, model, l)
+    l2 = greedyAction(net, st2.ρ, model, l)
     st2.locs[t] = l2
     st2.ρ[l2] += 1
   end
@@ -170,9 +202,9 @@ const MultiAgent = Truncated(Normal(0, 10), 1, 25)
 agentStr(x) = "m"
 
 "Randomly sample a rho"
-struct Sampler
+struct Sampler{A}
   nLocs::Int
-  nDist
+  nDist::A
 end
 descr(s::Sampler) = "$(agentStr(s.nDist)) ∈ $(s.nLocs)"
 
@@ -262,17 +294,17 @@ abstract type Model end
 Base.broadcastable(a::Model) = Base.RefValue(a)
 startEpisode!(model::Model, episode, logger) = nothing
 
-function backup!(model, ρ, target, logger, invRate)
-  prediction = model(ρ)
+function backup!(model::Model, ρ::SparseVector{Int,Int}, target, logger, invRate::Float64)
+  prediction = model(ρ)::TrackedReal{Float64}
   loss = 0.5 * (prediction - target).^2
   Flux.back!(loss, invRate)
   report!(logger, :grad, vcat(map(x->grad(x)[:], model.params)...))
   report!(logger, :loss, Flux.data(loss))
 end
 
-struct NN <: Model
-  v
-  params
+struct NN{W,P} <: Model
+  v::W
+  params::P
 end
 (m::NN)(x) = m.v(x)
 descr(n::NN) = "nn $(descr(n.v))"
@@ -287,17 +319,17 @@ fromSingle(net::RoadNet) = NN(Linear(a1Min(net.g, net.lam)[2]))
 predictB(model::NN, ρ)= Flux.data(model(ρ))
 predictT(model::NN, ρ)= Flux.data(model(ρ))
 
-struct NNStab{R} <: Model
-  q1
-  q2
-  params
-  q2params
+struct NNStab{R,M,P} <: Model
+  q1::M
+  q2::M
+  params::P
+  q2params::P
   copyRate::R
 end
 (m::NNStab)(x) = m.q1(x)
 descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) $(n.copyRate)"
 
-nnStab(copyRate=3200, arch=denseNet) = net-> begin
+nnStab(;copyRate=3200, arch=denseNet) = net-> begin
   q1 = arch(net)
   q2 = arch(net)
   NNStab(q1, q2, Flux.params(q1), Flux.params(q2), copyRate)
@@ -358,4 +390,3 @@ end
 VdLog(env::String) = VdLog(Visdom(env))
 
 showReport(vd::VdLog, k, v) = VisdomLog.report(vd.vd, k, v);
-showFig(vd::VdLog, k, fig) = VisdimLog.matplot(vd.vd, k, fig);

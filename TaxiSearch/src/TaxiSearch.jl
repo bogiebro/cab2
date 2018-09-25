@@ -3,30 +3,21 @@ using Reexport, DelimitedFiles
 import LightGraphs; const LG = LightGraphs
 import Laplacians; const Lap = Laplacians
 import FunctionWrappers; const Fn = FunctionWrappers.FunctionWrapper
-import PyCall
 using GraphPlot, Parameters
 const Itr = Iterators
 const T = Tuple
+using PyPlot
 
-@reexport using PyPlot, Distributions, LinearAlgebra, SparseArrays, Random
+@reexport using Distributions, LinearAlgebra, SparseArrays, Random
 
 export LG, Lap,
        randPol, greedyPol, greedyPolProp, hotPtrs, greedyF, greedyBF,
        iterated, fixedPoint, neighborMin, scorePolicy, ptrPolicy, randStep,
        routeDiff, nonNan, toDist, RoadNet, randM, justCycles,
-       getGraph, mkP, toContinuous, plotG, changeLen
+       mkP, toContinuous, plotG, changeLen
 
 const Graph = SparseMatrixCSC{Float64,Int}
 const Policy = Union{Graph, Matrix{Float64}}
-
-"Read a csv where each row is an edge"
-function getGraph(fname)
-  df = readdlm(fname, ',')
-  is = Int.(df[:,2])
-  js = Int.(df[:,1])
-  g = sparse(is .+ 1, js .+ 1, 1.0)
-  g .+ g'
-end
 
 "Road graph with associated properties"
 struct RoadNet
@@ -222,5 +213,6 @@ end
 
 include("simulation.jl")
 include("waitsum.jl")
+include("graphs.jl")
 
 end # module

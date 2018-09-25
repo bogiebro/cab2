@@ -17,7 +17,7 @@ struct MkPolSpec{X}
 end
 
 "A policy that depends on rho"
-const PolFn = Fn{Int,T{Vector{Int}, Int}}
+const PolFn = Fn{Int,T{SparseVector{Int,Int}, Int}}
 
 c(x::Graph) = PolFn((_,loc)-> randStep(x, loc))
 
@@ -57,9 +57,9 @@ updateSearch!(s::PolStat, t::Int, l::Int, w::Float64) = nothing
 
 "Stats that must be collected globally for all policies"
 abstract type GblStat end
-updateGenerated!(s::GblStat, p::Vector{Int}) = nothing
-updateLeftover!(s::GblStat, p::Vector{Int}) = nothing
-updateRho!(s::GblStat, i::Int, p::Vector{Int}) = nothing
+updateGenerated!(s::GblStat, p) = nothing
+updateLeftover!(s::GblStat, p) = nothing
+updateRho!(s::GblStat, i::Int, p) = nothing
 
 "Construct a stat from (nTaxis, limit, net)"
 struct MkStat{X} f::Fn{X, T{Int,Int,RoadNet}} end
@@ -67,13 +67,13 @@ struct MkStat{X} f::Fn{X, T{Int,Int,RoadNet}} end
 "Generalized 1d statistics type"
 struct SimVec{X,Y}
   pol::Vector{X}
-  gbl::Vector{X}
+  gbl::Vector{Y}
 end
 
 "Generalized nd statistics type"
 struct SimArray{X,Y}
   pol::Array{X}
-  gbl::Array{X}
+  gbl::Array{Y}
 end
 
 const SimStat = SimVec{Vector{PolStat}, GblStat}
@@ -145,8 +145,8 @@ end
 
 const nodeSOLFrac = MkStat{GblStat}((_::Int, _::Int, net::RoadNet)->
   NodeSOLFrac(zeros(Int, length(net.lam)), zeros(Int, length(net.lam))))
-updateGenerated!(s::NodeSOLFrac, p::Vector{Int}) = s.generated .+= p;
-updateLeftover!(s::NodeSOLFrac, p::Vector{Int}) = s.sol .+= p;
+updateGenerated!(s::NodeSOLFrac, p) = s.generated .+= p;
+updateLeftover!(s::NodeSOLFrac, p) = s.sol .+= p;
 finalize(s::NodeSOLFrac, steps) = nonNan(s.sol ./ s.generated)
 xlabel(::Type{NodeSOLFrac}) = "node"
 ylabel(::Type{NodeSOLFrac}) = "fraction of time without taxi"
@@ -155,7 +155,7 @@ ylabel(::Type{NodeSOLFrac}) = "fraction of time without taxi"
 struct MaxCars <: GblStat cars::Vector{Int} end
 
 const maxCars = MkStat{GblStat}((_::Int, lim::Int, net::RoadNet)-> MaxCars(zeros(Int, lim)))
-updateRho!(s::MaxCars, i::Int, rho::Vector{Int}) = s.cars[i] = maximum(rho);
+updateRho!(s::MaxCars, i::Int, rho) = s.cars[i] = maximum(rho);
 finalize(s::MaxCars, steps) = s.cars
 xlabel(::Type{MaxCars}) = "time"
 ylabel(::Type{MaxCars}) = "highest taxi density"
@@ -343,7 +343,7 @@ function mkPlot(ty, stat, nrows, ncols, i)
 end
 
 "Add a series to a plot"
-function addPlot!(ty, h, k, val::Vector{Float64})
+function addPlot!(ty, h, k, val)
  if ty == :hist
    h[:hist](val, alpha=0.2, density=true, label=k, ec="gray")
  elseif ty == :scatter
