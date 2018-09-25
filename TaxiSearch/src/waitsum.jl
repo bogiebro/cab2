@@ -2,24 +2,32 @@ using DataStructures, Flux, VisdomLog
 using Flux.Optimise: optimiser, adam, invdecay, descent, clip
 using Flux.Tracker: grad, TrackedReal
 using BSON: @save, @load
+using Distributed: myid
 export trainModel, NStep, VdLog, TxtLog, Logger, nn, nnStab, competTest,
   pretrain, scaleTest, mixedTest
 pygui(false)
 
+# To test
+# learning rate: 10^ -2 through -5
+# train rate: 2 ^ 0 through 7
+# decay: 0, 0.00001, 0.0001, or 0.001
+# limit: 2 ^ 3 through 10
+
+
 # Validating performance of trained models
 
-#function competTest(trained, net, episode, logView)
-  #nTaxis = ceil(Int, 0.2 * length(net.lam))
-  #trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
-  #fig = plt[:figure]()
-  #bench(withNTaxis(nTaxis, competP), net,
-    #S([taxiEmptyFrac, nodeWaitTimes], []),
-    #P([:hist, :scatter],[]), F([id, mean],[]), 1;
-    #rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
-  #showReport(logView, Symbol("comparison $episode"), fig)
-#end
-
 function competTest(trained, net, episode, logView)
+  nTaxis = ceil(Int, 0.2 * length(net.lam))
+  trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
+  fig = plt[:figure]()
+  bench(withNTaxis(nTaxis, competP), net,
+    S([taxiEmptyFrac, nodeWaitTimes], []),
+    P([:hist, :scatter],[]), F([id, mean],[]), 1;
+    rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
+  showReport(logView, Symbol("comparison $episode"), fig)
+end
+
+function maxCarTest(trained, net, episode, logView)
   nTaxis = ceil(Int, 0.2 * length(net.lam))
   trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)[1]
   fig = plt[:figure]()
@@ -27,7 +35,7 @@ function competTest(trained, net, episode, logView)
     S([], [maxCars]),
     P([],[:line]), F([],[id]), 1;
     rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
-  showReport(logView, Symbol("comparison $episode"), fig)
+  showReport(logView, Symbol("maxcar $episode"), fig)
 end
 
 function nTaxiList(net)
@@ -103,13 +111,13 @@ function trainLoop(gf, model, opt!, sampler, trDescr, logger,
   end
 end
 
-function resumeTraining(net, model, opt!, trDescr; trainRate=1,
-    log=Logger(), nDist=MultiAgent, alg=NStep(), args...)
+function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::Int=800,
+    views=[], nDist=MultiAgent, alg=NStep(), args...)
   invTrainRate = 1.0 / trainRate
   lamSampler = Poisson.(net.lam)
   sampler = Sampler(length(net.lam), nDist)
-  trDescr = joinDescr(trDescr, log, sampler, model, alg)
-  addView!(log, VdLog(trDescr))
+  trDescr = joinDescr(trDescr, "lf $logRate", sampler, model, alg)
+  log = Logger(logRate, [v(trDescr) for v in views])
   trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
     waitTime = 0.0
     nTaxis = rlState.ρSum
@@ -125,23 +133,23 @@ function resumeTraining(net, model, opt!, trDescr; trainRate=1,
   end
 end  
  
-function trainModel(net; modelF=nnStab(), lr=0.0005, limit=80.0, decay=0, args...)
+function trainModel(net; modelF=nnStab(), lr::Float64=0.0005, limit::Float64=80.0, decay::Float64=0.0, args...)
   model = modelF(net)
   opt! = optimiser(model.params, p->adam(p; η=lr),
     p->invdecay(p, decay), p->descent(p,1), p->clip(p, limit))
-  resumeTraining(net, model, opt!, "lr $lr"; args...)
+  resumeTraining(net, model, opt!, "$(myid()) lr $lr"; args...)
 end
 
-function pretrain(net; log=Logger(), lr=0.001, decay=0, trainRate=800, limit=80.0,
-    args...)
+function pretrain(net; views=[], lr::Float64=0.001, decay::Float64=0.0,
+    trainRate::Int=800, limit::Float64=80.0, logRate::Int=800, args...)
   model = modelFn(net)
   opt! = optimiser(model.params, p->adam(p; η=lr), p->invdecay(p, decay),
     p->descent(p,1), p->clip(p, limit))
   invTrainRate = 1.0 / trainRate
   sampler = Sampler(length(net.lam), SingleAgent)
   trueVals = a1Min(net.g, net.lam)[2]
-  trDescr = joinDescr("lr $lr", log, "pretrain", model)
-  addView!(log, VdLog(trDescr))
+  trDescr = joinDescr("$(myid()) lr $lr lr $logRate", "pretrain", model)
+  log = Logger(logRate, [v(trDescr) for v in views])
   trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, s::RLState
     backup!(model, s.ρ, model(s.ρ), trueVals[s.ρ.nzind[1]], log, invTrainRate)
   end
@@ -352,16 +360,13 @@ predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ))
 
 abstract type LogView end
 
-@with_kw struct Logger
-  freq::Int=800
-  reports::Dict{Symbol, Pair{Any,Int}}=Dict{Symbol,Pair{Any,Int}}()
-  view::Vector{LogView} = [TxtLog()]
+struct Logger
+  freq::Int
+  reports::Dict{Symbol, Pair{Any,Int}}
+  view::Vector{LogView}
 end
+Logger(freq,views) = Logger(freq, Dict{Symbol,Pair{Any,Int}}(), views)
 
-addView!(l::Logger, v::LogView) = push!(l.view, v)
-
-descr(l::Logger) = "lf $(l.freq)"
- 
 showLog(l, episode) = if episode % l.freq == 0
   for (k,(v,_)) in l.reports
     for lv in l.view showReport(lv, k, v) end
@@ -379,6 +384,7 @@ function report!(l::Logger, s::Symbol, data)
 end
 
 struct TxtLog <: LogView end
+TxtLog(_) = TxtLog()
 showReport(::TxtLog, k, v::Float64) = println("$k: $v");
 showReport(::TxtLog, k, v) = nothing
 showFig(::TxtLog, fig) = fig[:show]()
