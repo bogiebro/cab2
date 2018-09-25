@@ -178,7 +178,9 @@ version = "1.0.0"
 
 [[GraphPlot]]
 deps = ["ColorTypes", "Colors", "Compose", "DelimitedFiles", "LightGraphs", "SparseArrays"]
-path = "/home/sam/.julia/dev/GraphPlot"
+git-tree-sha1 = "c5c591d8a7e7d888c36db3018536ef65163fb0b9"
+repo-rev = "fixes"
+repo-url = "https://github.com/bogiebro/GraphPlot.jl.git"
 uuid = "a2cc645c-3eea-5389-862e-a155d0052231"
 version = "0.2.1+"
 
