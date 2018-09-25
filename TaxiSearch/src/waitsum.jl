@@ -4,15 +4,25 @@ using Flux.Tracker: grad, TrackedReal
 using BSON: @save, @load
 using Distributed: myid
 export trainModel, NStep, VdLog, TxtLog, Logger, nn, nnStab, competTest,
-  pretrain, scaleTest, mixedTest
+  pretrain, scaleTest, mixedTest, hpSearch
 pygui(false)
 
-# To test
-# learning rate: 10^ -2 through -5
-# train rate: 2 ^ 0 through 7
-# decay: 0, 0.00001, 0.0001, or 0.001
-# limit: 2 ^ 3 through 10
-
+# should limit each hp search to a given number of steps
+# also- not start new workers until old ones are dead. something
+# xargs-like
+function hpSearch(net, n)
+  for i in 1:n
+    lr=exp(rand(-5:-2))
+    tr=2^(rand(0:7))
+    decay=rand([0.0, 0.00001, 0.0001, 0.001])
+    limit=2^(rand(3:10))
+    copyRate=floor(Int, exp(rand(1:4)))
+    nsteps = rand(1:10)
+    @spawn trainModel(net; modelF=nnStab(copyRate=copyRate), lr=lr,
+      limit=limit, decay=decay, trainRate=tr, alg=NStep(nsteps), views=[VdLog])
+  end
+end
+                                                                                      
 
 # Validating performance of trained models
 
