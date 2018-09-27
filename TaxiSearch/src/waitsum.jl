@@ -1,3 +1,4 @@
+using CuArrays
 using DataStructures, Flux, VisdomLog, Distributed
 using Flux.Optimise: optimiser, adam, invdecay, descent, clip
 using Flux.Tracker: grad, TrackedReal
@@ -132,7 +133,7 @@ function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::In
     views=[], nDist=MultiAgent, alg=NStep(), args...)
   invTrainRate = 1.0 / trainRate
   lamSampler = Poisson.(net.lam)
-  sampler = Sampler(length(net.lam), nDist)
+  sampler = Sampler(length(net.lam), nDist(length(net.lam)))
   trDescr = joinDescr(" ", trDescr, "lf $logRate", sampler, model, alg)
   log = Logger(logRate, [v(trDescr) for v in views])
   trainLoop(net, model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
@@ -231,7 +232,6 @@ agentStr(x) = "m"
 struct Sampler{A}
   nLocs::Int
   nDist::A
-  Sampler(nLocs, nDistF) = new(nLocs, nDistF(nLocs))
 end
 descr(s::Sampler) = "$(agentStr(s.nDist)) ∈ $(s.nLocs)"
 
@@ -317,7 +317,7 @@ descr(::Dense{F,TrackedArray{Float64,2,Graph},T}) where {F,T} = "s"
 
 function denseNet(net::RoadNet)
   nLoc = length(net.lam)
-  Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1])
+  Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1]) |> gpu
 end
 
 localNet(net::RoadNet) = Chain(localized(net.g, 4, 3), x->x[:], Dense(3 * length(net.lam), 1), x->x[1])
@@ -379,7 +379,7 @@ struct NNStab{R,M,P} <: Model
   q2params::P
   copyRate::R
 end
-(m::NNStab)(x) = m.q1(x)
+(m::NNStab)(x) = m.q1(Vector(x) |> gpu)
 descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) cr $(n.copyRate)"
 
 nnStab(;copyRate=3200, arch=denseNet) = net-> begin
@@ -398,7 +398,7 @@ function startEpisode!(model::NNStab{Float64}, episode, logger)
   updateTarget!(model.q2params, model.params, model.copyRate)
 end
 
-predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ))
+predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ |> gpu))
 
 
 # Loggers
