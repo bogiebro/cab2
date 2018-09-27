@@ -189,7 +189,7 @@ function greedyAction(net, ρ, model, l)
   (net.g.rowval[inds[best]], valEsts[best])
 end
 
-function moveTaxis(st, net, model)::Tuple{RLState, TrackedReal{Float64}}
+function moveTaxis(st, net, model)::Tuple{RLState, TrackedReal}
   st2 = deepcopy(st)
   l2Val = 0.0
   for (t,l) in enumerate(st2.locs)
@@ -249,11 +249,11 @@ end
 abstract type Alg end
 
 mutable struct NStep <: Alg
-  history::CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal{Float64}}}
+  history::CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal}}
   seen::Set{SparseVector{Int,Int}}
   curSum::Int # sum of waiting times over all in history
 end
-NStep(n=4) = NStep(CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal{Float64}}}(n),
+NStep(n=4) = NStep(CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal}}(n),
    Set{SparseVector{Int,Int}}(), 0)
 descr(ns::NStep) = "TD$(ns.history.capacity)"
 
@@ -262,7 +262,7 @@ function reset!(alg::NStep)
   empty!(alg.seen)
 end
 
-function step!(alg::NStep, model, st::RLState, valEst::TrackedReal{Float64}, logger, invTrainRate)::Bool
+function step!(alg::NStep, model, st::RLState, valEst::TrackedReal, logger, invTrainRate)::Bool
   if st.ρSum == 0
     while !isempty(alg.history)
       ρ0, t, est = popfirst!(alg.history)
@@ -292,7 +292,7 @@ end
 # Neural net utilities
 
 struct Linear W end
-Linear(n::Integer) = Linear(param(randn(n)))
+linear(net::RoadNet) = Linear(param(randn(length(net.lam)))) |> gpu
 (m::Linear)(x) = dot(m.W, x)
 Flux.@treelike Linear
 descr(::Linear) = "l"
@@ -348,7 +348,7 @@ abstract type Model end
 Base.broadcastable(a::Model) = Base.RefValue(a)
 startEpisode!(model::Model, episode, logger) = nothing
 
-function backup!(model, ρ::SparseVector{Int,Int}, predicted::TrackedReal{Float64},
+function backup!(model, ρ::SparseVector{Int,Int}, predicted::TrackedReal,
     target, logger, invRate::Float64)
   loss = 0.5 * (predicted - target).^2
   Flux.back!(loss, invRate)
@@ -379,7 +379,7 @@ struct NNStab{R,M,P} <: Model
   q2params::P
   copyRate::R
 end
-(m::NNStab)(x) = m.q1(Vector(x) |> gpu)
+(m::NNStab)(x) = m.q1(x |> gpu)
 descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) cr $(n.copyRate)"
 
 nnStab(;copyRate=3200, arch=denseNet) = net-> begin
