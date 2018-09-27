@@ -1,3 +1,4 @@
+using MAT
 export manhattan, testNet
 
 "Read a csv where each row is an edge"

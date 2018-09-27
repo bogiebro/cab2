@@ -1,40 +1,45 @@
-using DataStructures, Flux, VisdomLog
+using DataStructures, Flux, VisdomLog, Distributed
 using Flux.Optimise: optimiser, adam, invdecay, descent, clip
 using Flux.Tracker: grad, TrackedReal
 using BSON: @save, @load
-using Distributed: myid
 export trainModel, NStep, VdLog, TxtLog, Logger, nn, nnStab, competTest,
-  pretrain, scaleTest, mixedTest, hpSearch
+  pretrain, scaleTest, mixedTest, hpSearch, localNet
 pygui(false)
 
 # should limit each hp search to a given number of steps
 # also- not start new workers until old ones are dead. something
 # xargs-like
 function hpSearch(net, n)
+  seen = Set()
+  pool = default_worker_pool()
   for i in 1:n
-    lr=exp(rand(-5:-2))
-    tr=2^(rand(0:7))
-    decay=rand([0.0, 0.00001, 0.0001, 0.001])
-    limit=2^(rand(3:10))
-    copyRate=floor(Int, exp(rand(1:4)))
+    lr=10.0^(rand(-5:-2))
+    decay=rand([0.0, 0.00001, 0.000001, 0.0000001])
+    limit=2.0^(rand(3:10))
+    copyRate= 10.0^rand(-4:-2) # 10^(rand(0:2))
     nsteps = rand(1:10)
-    @spawn trainModel(net; modelF=nnStab(copyRate=copyRate), lr=lr,
-      limit=limit, decay=decay, trainRate=tr, alg=NStep(nsteps), views=[VdLog])
+    spec = (lr,decay,limit,copyRate,nsteps)
+    if spec in seen continue end
+    push!(seen, spec)
+    remote_do(trainModel, pool,net; niter=600*800, modelF=nnStab(arch=localNet, copyRate=copyRate), lr=lr,
+      limit=limit, decay=decay, trainRate=1, alg=NStep(nsteps), views=[VdLog])
   end
 end
                                                                                       
 
 # Validating performance of trained models
 
-function competTest(trained, net, episode, logView)
+function competTest(net) 
   nTaxis = ceil(Int, 0.2 * length(net.lam))
-  trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
-  fig = plt[:figure]()
-  bench(withNTaxis(nTaxis, competP), net,
-    S([taxiEmptyFrac, nodeWaitTimes], []),
-    P([:hist, :scatter],[]), F([id, mean],[]), 1;
-    rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
-  showReport(logView, Symbol("comparison $episode"), fig)
+  (trained, episode, logView)-> begin
+    trainedPol(ρ, l) = greedyAction(net, ρ, trained, l)
+    fig = plt[:figure]()
+    bench(withNTaxis(nTaxis, competP), net,
+      S([taxiEmptyFrac, nodeWaitTimes], []),
+      P([:hist, :scatter],[]), F([id, mean],[]), 1;
+      rand=randPol(net), greedy=greedyPol(net), trained=PolFn(trainedPol))
+    showReport(logView, Symbol("comparison $episode"), fig)
+  end
 end
 
 function maxCarTest(trained, net, episode, logView)
@@ -84,7 +89,7 @@ end
 
 # Training utilities
 
-joinDescr(args...) = foldl((x,y)-> y == nothing ? x : "$x $y", map(descr, args))
+joinDescr(sep, args...) = foldl((x,y)-> y == nothing ? x : "$x$sep$y", map(descr, args))
 descr(::Dense) = "d"
 descr(s::String) = s
 descr(s::Any) = nothing
@@ -95,21 +100,22 @@ mutable struct RLState
   ρSum::Int
 end
 
-function trainLoop(gf, model, opt!, sampler, trDescr, logger,
-    trainRate; saveFreq=204800, tests=[])
+function trainLoop(gf, net, model, opt!, sampler, trDescr, logger,
+    trainRate; saveFreq=204800, tests=[competTest], niter=100000000)
   f = Fn{Nothing, T{Int,RLState}}(gf)
+  testFns = [t(net) for t in tests]
   mkpath("checkpoints")
   bestLoss = Inf
   try
-    for (episode, rlState::RLState) in enumerate(sampler)
+    for (episode, rlState::RLState) in Itr.take(enumerate(sampler), niter)
       if episode % trainRate == 0 opt!() end
       f(episode, rlState)
-      if episode % saveFreq == 1
+      if episode % saveFreq == 0
         avgLoss = logger.reports[:loss][1]
         if avgLoss <= bestLoss 
           bestLoss = avgLoss
           @save "checkpoints/$trDescr $trainRate $episode" model opt!
-          for t in tests t(model, net, episode, logger.view) end
+          for t in testFns t(model, episode, logger.view) end
         end
       end
       showLog(logger, episode)
@@ -119,16 +125,17 @@ function trainLoop(gf, model, opt!, sampler, trDescr, logger,
     if isa(e, InterruptException) return (model, opt!, logger) end
     rethrow()
   end
+  @save "checkpoints/$trDescr final" model opt!
 end
 
-function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::Int=800,
+function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::Int=200,
     views=[], nDist=MultiAgent, alg=NStep(), args...)
   invTrainRate = 1.0 / trainRate
   lamSampler = Poisson.(net.lam)
   sampler = Sampler(length(net.lam), nDist)
-  trDescr = joinDescr(trDescr, "lf $logRate", sampler, model, alg)
+  trDescr = joinDescr(" ", trDescr, "lf $logRate", sampler, model, alg)
   log = Logger(logRate, [v(trDescr) for v in views])
-  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
+  trainLoop(net, model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
     waitTime = 0.0
     nTaxis = rlState.ρSum
     startEpisode!(model, episode, log)
@@ -147,7 +154,7 @@ function trainModel(net; modelF=nnStab(), lr::Float64=0.0005, limit::Float64=80.
   model = modelF(net)
   opt! = optimiser(model.params, p->adam(p; η=lr),
     p->invdecay(p, decay), p->descent(p,1), p->clip(p, limit))
-  resumeTraining(net, model, opt!, "$(myid()) lr $lr"; args...)
+  resumeTraining(net, model, opt!, "$(myid()) lr $lr dec $decay lim $limit"; args...)
 end
 
 function pretrain(net; views=[], lr::Float64=0.001, decay::Float64=0.0,
@@ -158,9 +165,9 @@ function pretrain(net; views=[], lr::Float64=0.001, decay::Float64=0.0,
   invTrainRate = 1.0 / trainRate
   sampler = Sampler(length(net.lam), SingleAgent)
   trueVals = a1Min(net.g, net.lam)[2]
-  trDescr = joinDescr("$(myid()) lr $lr lr $logRate", "pretrain", model)
+  trDescr = joinDescr(" ", "$(myid()) lr $lr lr $logRate", "pretrain", model)
   log = Logger(logRate, [v(trDescr) for v in views])
-  trainLoop(model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, s::RLState
+  trainLoop(net, model, opt!, sampler, trDescr, log, trainRate; args...) do episode::Int, s::RLState
     backup!(model, s.ρ, model(s.ρ), trueVals[s.ρ.nzind[1]], log, invTrainRate)
   end
 end
@@ -213,16 +220,18 @@ end
 # Samplers
 
 struct SingleAgent end
-Base.rand(::Type{SingleAgent}) = 1
-agentStr(x::Type{SingleAgent}) = "s"
+SingleAgent(n) = SingleAgent()
+Base.rand(::SingleAgent) = 1
+agentStr(::SingleAgent) = "s"
 
-const MultiAgent = Truncated(Normal(0, 10), 1, 25)
+MultiAgent(n) = Truncated(Normal(0, 0.2 * n), 1, n)
 agentStr(x) = "m"
 
 "Randomly sample a rho"
 struct Sampler{A}
   nLocs::Int
   nDist::A
+  Sampler(nLocs, nDistF) = new(nLocs, nDistF(nLocs))
 end
 descr(s::Sampler) = "$(agentStr(s.nDist)) ∈ $(s.nLocs)"
 
@@ -282,16 +291,42 @@ end
 
 # Neural net utilities
 
+struct Linear W end
+Linear(n::Integer) = Linear(param(randn(n)))
+(m::Linear)(x) = dot(m.W, x)
+Flux.@treelike Linear
+descr(::Linear) = "l"
+
+neighborhoods(g::Graph, n::Int)::Graph = (g + Diagonal(ones(g.m)))^n .> 0
+
+stacked(xs, dim) = cat(Flux.unsqueeze.(xs, dim)..., dims=dim)
+
+struct Stacked{A} layers::Vector{A} end
+Flux.children(s::Stacked) = s.layers
+Flux.mapchildren(f, s::Stacked) = Stacked(f.(s.layers))
+Flux.adapt(T, s::Stacked) = Stacked(map(x-> adapt(T, x), s.layers))
+(s::Stacked)(x) = stacked([l(x) for l in s.layers], 1)
+descr(s::Stacked) = joinDescr("", "{", descr.(s.layers)..., "}")
+
+function localized(g, n, c, activation=leakyrelu)
+  mask = copy(neighborhoods(g, n)')
+  Stacked([Dense(param(SparseMatrixCSC(mask.m, mask.n, mask.colptr, mask.rowval, Flux.initn(length(mask.nzval)))),
+                 param(zeros(mask.m)), activation) for _ in 1:c])
+end
+descr(::Dense{F,TrackedArray{Float64,2,Graph},T}) where {F,T} = "s"
+
 function denseNet(net::RoadNet)
   nLoc = length(net.lam)
   Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1])
 end
 
+localNet(net::RoadNet) = Chain(localized(net.g, 4, 3), x->x[:], Dense(3 * length(net.lam), 1), x->x[1])
+
 regularize(x, ps) = sum(map(x->sum(abs.(x)), ps))
 
 huber(a, delta) = Flux.data(a) <= delta ?  0.5 * a.^2 : delta * (abs.(a) - 0.5 * delta)
 
-descr(c::Chain) = joinDescr(descr.(c.layers)...)
+descr(c::Chain) = joinDescr("", descr.(c.layers)...)
 
 function updateTarget!(targetPs, behaviorPs, tau)
   for (prev, current) in zip(targetPs, behaviorPs)
@@ -317,7 +352,7 @@ function backup!(model, ρ::SparseVector{Int,Int}, predicted::TrackedReal{Float6
     target, logger, invRate::Float64)
   loss = 0.5 * (predicted - target).^2
   Flux.back!(loss, invRate)
-  report!(logger, :grad, vcat(map(x->grad(x)[:], model.params)...))
+  report!(logger, :grad, Vector(vcat(map(x->grad(x)[:], model.params)...)))
   report!(logger, :loss, Flux.data(loss))
 end
 
@@ -345,7 +380,7 @@ struct NNStab{R,M,P} <: Model
   copyRate::R
 end
 (m::NNStab)(x) = m.q1(x)
-descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) $(n.copyRate)"
+descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) cr $(n.copyRate)"
 
 nnStab(;copyRate=3200, arch=denseNet) = net-> begin
   q1 = arch(net)
@@ -360,7 +395,7 @@ function startEpisode!(model::NNStab{Int}, episode, logger)
 end
 
 function startEpisode!(model::NNStab{Float64}, episode, logger)
-  updateTarget!(model.q1params, model.params, model.copyRate)
+  updateTarget!(model.q2params, model.params, model.copyRate)
 end
 
 predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ))
