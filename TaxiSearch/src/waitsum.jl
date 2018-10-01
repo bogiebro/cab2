@@ -19,7 +19,7 @@ function hpSearch(net, n)
     spec = (lr,decay,limit,copyRate,nsteps)
     if spec in seen continue end
     push!(seen, spec)
-    remote_do(trainModel, pool,net; niter=600*800, modelF=nnStab(arch=localNet, copyRate=copyRate), lr=lr,
+    remote_do(trainModel, pool,net; niter=600*800, modelF=nnStab(arch=kipf, copyRate=copyRate), lr=lr,
       limit=limit, decay=decay, trainRate=1, alg=NStep(nsteps), views=[VdLog])
   end
 end
@@ -90,7 +90,7 @@ end
 joinDescr(sep, args...) = foldl((x,y)-> y == nothing ? x : "$x$sep$y", map(descr, args))
 descr(::Dense) = "d"
 descr(s::String) = s
-descr(s::Any) = nothing
+descr(s::Any) = ""
 
 mutable struct RLState
   ρ::SparseVector{Int,Int}
@@ -133,6 +133,7 @@ function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::In
   sampler = Sampler(length(net.lam), nDist(length(net.lam)))
   trDescr = joinDescr(" ", trDescr, "lf $logRate", sampler, model, alg)
   log = Logger(logRate, [v(trDescr) for v in views])
+  println(stderr, "Training started")
   trainLoop(net, model, opt!, sampler, trDescr, log, trainRate; args...) do episode, rlState
     waitTime = 0.0
     nTaxis = rlState.ρSum
@@ -173,20 +174,32 @@ end
 
 # Taxi simulation
 
-function addTaxi(a, i)
-  a2 = copy(a)
-  a2[i] += 1
-  a2
+@inline function modelIfAdded(model, ρ, i)::TrackedReal
+  ρ[i] += 1
+  result = model(ρ)
+  ρ[i] -= 1
+  result
 end
 
-function greedyAction(net, ρ, model, l)
-  inds = net.g.colptr[l]:(net.g.colptr[l+1]-1)
-  valEsts = model.(addTaxi(ρ, net.g.rowval[i]) for i in inds)
-  best = argmin(valEsts)
-  (net.g.rowval[inds[best]], valEsts[best])
+function findMinItr(a)
+  ix = 0
+  minVal, st = iterate(a)
+  for (i,m) in enumerate(Itr.rest(a, st))
+    if m < minVal
+      minVal = m
+      ix = i
+    end
+  end
+  (minVal, ix + 1)
 end
 
-function moveTaxis(st2, net, model)::Tuple{RLState, TrackedReal}
+@inline function greedyAction(net, ρ, model, l)
+  next_options = net.g.rowval[net.g.colptr[l]:(net.g.colptr[l+1]-1)]
+  minVal, minIx = findMinItr(modelIfAdded(model, ρ, i) for i in next_options)
+  (next_options[minIx], minVal)
+end
+
+function moveTaxis(st2::RLState, net::RoadNet, model)::Tuple{RLState, TrackedReal}
   l2Val = 0.0
   for (t,l) in enumerate(st2.locs)
     if l <= 0 continue end
@@ -262,8 +275,7 @@ end
 
 function step!(alg::NStep, model, st::RLState, valEst::TrackedReal, logger, invTrainRate)::Bool
   alg.steps += 1
-  println("Steps $(alg.steps)")
-  if st.ρSum == 0 || alg.steps >= 150
+  if st.ρSum == 0 || alg.steps >= 100
     prediction = st.ρSum == 0 ? 0 : predictT(model, st.ρ);
     while !isempty(alg.history)
       ρ0, t, est = popfirst!(alg.history)
@@ -274,7 +286,6 @@ function step!(alg::NStep, model, st::RLState, valEst::TrackedReal, logger, invT
       alg.curSum -= t
     end
     if st.ρSum == 0 backup!(model, st.ρ, valEst, 0, logger, invTrainRate) end
-    println(stderr, "Should be ending")
     return false
   end
   if isfull(alg.history)
@@ -291,14 +302,21 @@ function step!(alg::NStep, model, st::RLState, valEst::TrackedReal, logger, invT
 end
 
 
-# Neural net utilities
+# Toy networks
 
 struct Linear W end
 linear(net::RoadNet) = Linear(param(randn(length(net.lam))))
-(m::Linear)(x) = sum(m.W .* x)
+(m::Linear)(x) = m.W' * x
 Flux.@treelike Linear
 descr(::Linear) = "l"
 
+function denseNet(net::RoadNet)
+  nLoc = length(net.lam)
+  Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1])
+end
+
+
+# Dense with masked neighbors
 neighborhoods(g::Graph, n::Int)::Graph = (g + Diagonal(ones(g.m)))^n .> 0
 
 stacked(xs, dim) = cat(Flux.unsqueeze.(xs, dim)..., dims=dim)
@@ -317,12 +335,38 @@ function localized(g, n, c, activation=leakyrelu)
 end
 descr(::Dense{F,TrackedArray{Float64,2,Graph},T}) where {F,T} = "s"
 
-function denseNet(net::RoadNet)
-  nLoc = length(net.lam)
-  Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1])
+@views localNet(net::RoadNet) = Chain(localized(net.g, 4, 2), x->x[:], Dense(2 * length(net.lam), 1), x->x[1])
+
+
+# Graph convolution from Kipf & Welling 2017
+struct Kipf{dad, w}
+  dad::dad
+  w::w
+end
+(k::Kipf)(h) = (k.dad * h) * k.w
+Flux.@treelike Kipf
+descr(::Kipf) = "k"
+
+function kipfDAD(g::Graph)
+  a = (g + Diagonal(ones(g.m)))
+  d = @views Diagonal((sum(a; dims=2).^(-1/2))[:])
+  d * a * d
 end
 
-localNet(net::RoadNet) = Chain(localized(net.g, 4, 3), x->x[:], Dense(3 * length(net.lam), 1), x->x[1])
+function Kipf(dad::Graph, prev, next)
+  w = param(Flux.initn(prev, next))
+  Kipf(dad, w)
+end
+
+function kipf(net)
+  dad = kipfDAD(net.g)
+  Chain(Kipf(dad, 1, 3), x->leakyrelu.(x), Kipf(dad, 3, 1), sum)
+end
+
+kipfdad(dad) = net-> Chain(Kipf(dad, 1, 3), x->leakyrelu.(x), Kipf(dad, 3, 1), sum)
+
+
+# Neural utilities
 
 regularize(x, ps) = sum(map(x->sum(abs.(x)), ps))
 
@@ -354,7 +398,7 @@ function backup!(model, ρ::SparseVector{Int,Int}, predicted::TrackedReal,
     target, logger, invRate::Float64)
   loss = 0.5 * (predicted - target).^2
   Flux.back!(loss, invRate)
-  report!(logger, :grad, Vector(vcat(map(x->grad(x)[:], model.params)...)))
+  report!(logger, :grad, Vector(vcat(map(x-> grad(x)[:], model.params)...)))
   report!(logger, :loss, Flux.data(loss))
 end
 
@@ -386,7 +430,7 @@ descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) cr $(n.copyRate)"
 
 nnStab(;copyRate=3200, arch=denseNet) = net-> begin
   q1 = arch(net)
-  q2 = arch(net)
+  q2 = deepcopy(q1)
   NNStab(q1, q2, Flux.params(q1), Flux.params(q2), copyRate)
 end
 
