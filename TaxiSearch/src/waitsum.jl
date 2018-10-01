@@ -1,4 +1,4 @@
-using CuArrays
+# using CuArrays
 using DataStructures, Flux, VisdomLog, Distributed
 using Flux.Optimise: optimiser, adam, invdecay, descent, clip
 using Flux.Tracker: grad, TrackedReal
@@ -7,9 +7,6 @@ export trainModel, NStep, VdLog, TxtLog, Logger, nn, nnStab, competTest,
   pretrain, scaleTest, mixedTest, hpSearch, localNet
 pygui(false)
 
-# should limit each hp search to a given number of steps
-# also- not start new workers until old ones are dead. something
-# xargs-like
 function hpSearch(net, n)
   seen = Set()
   pool = default_worker_pool()
@@ -129,7 +126,7 @@ function trainLoop(gf, net, model, opt!, sampler, trDescr, logger,
   @save "checkpoints/$trDescr final" model opt!
 end
 
-function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::Int=200,
+function resumeTraining(net, model, opt!, trDescr; trainRate::Int=1, logRate::Int=100,
     views=[], nDist=MultiAgent, alg=NStep(), args...)
   invTrainRate = 1.0 / trainRate
   lamSampler = Poisson.(net.lam)
@@ -189,8 +186,7 @@ function greedyAction(net, ρ, model, l)
   (net.g.rowval[inds[best]], valEsts[best])
 end
 
-function moveTaxis(st, net, model)::Tuple{RLState, TrackedReal}
-  st2 = deepcopy(st)
+function moveTaxis(st2, net, model)::Tuple{RLState, TrackedReal}
   l2Val = 0.0
   for (t,l) in enumerate(st2.locs)
     if l <= 0 continue end
@@ -252,27 +248,33 @@ mutable struct NStep <: Alg
   history::CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal}}
   seen::Set{SparseVector{Int,Int}}
   curSum::Int # sum of waiting times over all in history
+  steps::Int
 end
 NStep(n=4) = NStep(CircularBuffer{Tuple{SparseVector{Int,Int}, Int, TrackedReal}}(n),
-   Set{SparseVector{Int,Int}}(), 0)
+   Set{SparseVector{Int,Int}}(), 0, 0)
 descr(ns::NStep) = "TD$(ns.history.capacity)"
 
 function reset!(alg::NStep)
   alg.curSum = 0
+  alg.steps = 0
   empty!(alg.seen)
 end
 
 function step!(alg::NStep, model, st::RLState, valEst::TrackedReal, logger, invTrainRate)::Bool
-  if st.ρSum == 0
+  alg.steps += 1
+  println("Steps $(alg.steps)")
+  if st.ρSum == 0 || alg.steps >= 150
+    prediction = st.ρSum == 0 ? 0 : predictT(model, st.ρ);
     while !isempty(alg.history)
       ρ0, t, est = popfirst!(alg.history)
       if !(ρ0 in alg.seen)
         push!(alg.seen, ρ0)
-        backup!(model, ρ0, est, alg.curSum, logger, invTrainRate)
+        backup!(model, ρ0, est, alg.curSum + prediction, logger, invTrainRate)
       end
       alg.curSum -= t
     end
-    backup!(model, st.ρ, valEst, 0, logger, invTrainRate)
+    if st.ρSum == 0 backup!(model, st.ρ, valEst, 0, logger, invTrainRate) end
+    println(stderr, "Should be ending")
     return false
   end
   if isfull(alg.history)
@@ -292,8 +294,8 @@ end
 # Neural net utilities
 
 struct Linear W end
-linear(net::RoadNet) = Linear(param(randn(length(net.lam)))) |> gpu
-(m::Linear)(x) = dot(m.W, x)
+linear(net::RoadNet) = Linear(param(randn(length(net.lam))))
+(m::Linear)(x) = sum(m.W .* x)
 Flux.@treelike Linear
 descr(::Linear) = "l"
 
@@ -317,7 +319,7 @@ descr(::Dense{F,TrackedArray{Float64,2,Graph},T}) where {F,T} = "s"
 
 function denseNet(net::RoadNet)
   nLoc = length(net.lam)
-  Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1]) |> gpu
+  Chain(Dense(nLoc, 2 * nLoc, leakyrelu), Dense(2 * nLoc, 1), x->x[1])
 end
 
 localNet(net::RoadNet) = Chain(localized(net.g, 4, 3), x->x[:], Dense(3 * length(net.lam), 1), x->x[1])
@@ -379,7 +381,7 @@ struct NNStab{R,M,P} <: Model
   q2params::P
   copyRate::R
 end
-(m::NNStab)(x) = m.q1(x |> gpu)
+(m::NNStab)(x) = m.q1(x)
 descr(n::NNStab{R}) where {R} = "nn2 $(descr(n.q1)) cr $(n.copyRate)"
 
 nnStab(;copyRate=3200, arch=denseNet) = net-> begin
@@ -398,7 +400,7 @@ function startEpisode!(model::NNStab{Float64}, episode, logger)
   updateTarget!(model.q2params, model.params, model.copyRate)
 end
 
-predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ |> gpu))
+predictT(model::NNStab, ρ)= Flux.data(model.q2(ρ))
 
 
 # Loggers
@@ -430,7 +432,7 @@ end
 
 struct TxtLog <: LogView end
 TxtLog(_) = TxtLog()
-showReport(::TxtLog, k, v::Float64) = println("$k: $v");
+showReport(::TxtLog, k, v::Float64) = println(stderr, "$k: $v");
 showReport(::TxtLog, k, v) = nothing
 showFig(::TxtLog, fig) = fig[:show]()
 
