@@ -1,5 +1,5 @@
 using MAT
-export manhattan, testNet
+export manhattan, testNet, manhattan_sg
 
 "Read a csv where each row is an edge"
 function getGraph(fname)
@@ -15,6 +15,15 @@ function manhattan()
   trips = matread("data/manhattan-trips.mat");
   coords = readdlm("data/manhattan-coords.csv", ',', Float32);
   RoadNet(m, trips["eveM"], nothing, trips["eveP"][:,1], coords[:,1], coords[:,2]);
+end
+
+function manhattan_sg()
+  g = getGraph("data/manhattan.csv");
+  trips = matread("data/manhattan-trips.mat");
+  coords = readdlm("data/manhattan-coords.csv", ',', Float32);
+  ix = Bool.(neighborhoods(g, 10)[:,1])
+  RoadNet(g[ix,ix], trips["eveM"][ix,ix], nothing, trips["eveP"][ix,1],
+          coords[ix,1], coords[ix,2]);
 end
 
 function testNet()

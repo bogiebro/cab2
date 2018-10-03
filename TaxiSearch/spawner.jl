@@ -1,6 +1,8 @@
 @everywhere import Pkg
 @everywhere Pkg.activate(".")
 @everywhere using TaxiSearch
-net = manhattan()
-hpSearch(net, 10)
+import BSON
+using LightGraphs
+BSON.@load "manhattan_sg.bson" net
+hpSearch(net, 40)
 wait()

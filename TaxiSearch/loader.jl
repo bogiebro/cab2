@@ -4,4 +4,4 @@ using BSON, LightGraphs
 using Revise
 using TaxiSearch
 
-BSON.@load "manhattan.bson" net
+BSON.@load "manhattan_sg.bson" net

@@ -19,6 +19,8 @@ export LG, Lap,
 const Graph = SparseMatrixCSC{Float64,Int}
 const Policy = Union{Graph, Matrix{Float64}}
 
+neighborhoods(g::Graph, n::Int)::Graph = (g + Diagonal(ones(g.m)))^n .> 0
+
 "Road graph with associated properties"
 struct RoadNet
   g::Graph
