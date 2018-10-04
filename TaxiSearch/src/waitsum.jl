@@ -1,7 +1,5 @@
 # using CuArrays
 
-# to make this work on manhttan, we may need to scale probabilities up
-
 using DataStructures, Flux, VisdomLog, Distributed
 using Flux.Optimise: optimiser, adam, invdecay, descent, clip
 using Flux.Tracker: grad, TrackedReal
@@ -24,7 +22,7 @@ function hpSearch(net, n)
     if spec in seen continue end
     push!(seen, spec)
     remote_do(trainModel, pool,net; niter=1000, modelF=nnStab(arch=kipf, copyRate=copyRate), lr=lr,
-      limit=limit, decay=decay, trainRate=1, alg=NStep(nsteps), views=[VdLog], saveFreq=100, logRate=5)
+      limit=limit, decay=decay, trainRate=1, alg=NStep(nsteps), views=[VdLog], saveFreq=100)
   end
 end
                                                                                       
@@ -117,7 +115,7 @@ function trainLoop(gf, net, model, opt!, sampler, trDescr, logger,
         if avgLoss <= bestLoss 
           bestLoss = avgLoss
           @save "checkpoints/$trDescr $trainRate $episode" model opt!
-          # for t in testFns t(model, episode, logger.view) end
+          for t in testFns t(model, episode, logger.view) end
         end
       end
       showLog(logger, episode)
@@ -341,12 +339,20 @@ descr(::Dense{F,TrackedArray{Float64,2,Graph},T}) where {F,T} = "s"
 localNet(net::RoadNet) = Chain(localized(net.g, 4, 2), x->x[:], Dense(2 * length(net.lam), 1), x->x[1])
 
 
-# Graph convolution from Kipf & Welling 2017
-struct Kipf{dad, w}
+# Graph convolution from Kipf & Welling 2017 with added bias
+struct Kipf{dad, w <: AbstractMatrix, b <: AbstractMatrix}
   dad::dad
   w::w
+  b::b
 end
-(k::Kipf)(h) = leakyrelu.((k.dad * h) * k.w)
+
+function Kipf(dad::Graph, prev::Int, next::Int)
+  w = param(sparse(Flux.initn(prev, next)))
+  b = param(zeros(1, next))
+  Kipf(dad, w, b)
+end
+
+(k::Kipf)(h) = leakyrelu.((k.dad * h) * k.w .+ k.b)
 Flux.@treelike Kipf
 descr(::Kipf) = "k"
 
@@ -356,16 +362,12 @@ function kipfDAD(g::Graph)
   d * a * d
 end
 
-function Kipf(dad::Graph, prev, next)
-  w = param(sparse(Flux.initn(prev, next)))
-  Kipf(dad, w)
-end
-
 vecToMat(x) = sparse(x.nzind, ones(length(x.nzind)), x.nzval, x.n, 1)
 
 function kipf(net)
   dad = kipfDAD(net.g)
-  Chain(vecToMat, Kipf(dad, 1, 5), Kipf(dad, 5, 5), (x->x[:]), Dense(5 * net.g.m, 1), sum)
+  agg = Linear(param(randn(length(net.lam) * 3)))
+  Chain(vecToMat, Kipf(dad, 1, 3), Kipf(dad, 3, 3), (x->x[:]), agg)
 end
 
 
@@ -478,10 +480,12 @@ function report!(l::Logger, s::Symbol, data)
   end
 end
 
+showReport(a::Vector{X}, k, v) where X = for x in a showReport(x, k, v) end
+
 struct TxtLog <: LogView end
 TxtLog(_) = TxtLog()
 showReport(::TxtLog, k, v::Float64) = println(stderr, "$k: $v");
-showReport(::TxtLog, k, v) = nothing
+showReport(::TxtLog, k, v) = nothing # println(stderr, "$k: $v");
 showFig(::TxtLog, fig) = fig[:show]()
 
 struct VdLog <: LogView 

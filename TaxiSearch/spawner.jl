@@ -4,5 +4,5 @@
 import BSON
 using LightGraphs
 BSON.@load "manhattan_sg.bson" net
-hpSearch(net, 40)
+hpSearch(net,30)
 wait()
